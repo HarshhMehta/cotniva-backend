@@ -21,6 +21,7 @@ const adminRoutes = require("./routes/admin.routes");
 const cloudinaryRoutes = require("./routes/cloudinary.routes");
 const sliderRoutes = require("./routes/slider.routes");
 const topbarRoutes = require('./routes/topbar.routes');
+const galleryRoutes = require("./routes/gallery.routes");
 // middleware
 app.use(cors());
 app.use(express.json());
@@ -40,6 +41,7 @@ app.use("/api/cloudinary", cloudinaryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/slider", sliderRoutes);
 app.use('/api/topbar', topbarRoutes);
+app.use("/api/gallery", galleryRoutes);
 // root route
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 app.listen(PORT, () => console.log(`server running on port ${PORT}`));

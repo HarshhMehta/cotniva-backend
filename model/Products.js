@@ -25,29 +25,26 @@ const productsSchema = mongoose.Schema({
     required: true,
   },
   imageURLs: [{
-    color:{
-      name:{
-        type: String,
-        required: false,
-        trim: true,
-      },
-      clrCode:{
-        type: String,
-        required: false,
-        trim: true,
-      }
-    },
     img:{
       type: String,
       required: false,
       validate: [validator.isURL, "Please provide valid url(s)"]
     },
-    sizes:[String],
     isDefault: {
       type: Boolean,
       default: false
-    }
+    },
+    // kept optional for old products — no longer used in UI
+    color:{
+      name:{ type: String, required: false, trim: true },
+      clrCode:{ type: String, required: false, trim: true }
+    },
+    sizes:[String],
   }],
+  sizes: {
+    type: [String],
+    default: [],
+  },
   parent:{
     type:String,
     required:true,
@@ -55,7 +52,8 @@ const productsSchema = mongoose.Schema({
    },
   children:{
     type:String,
-    required:true,
+    required: false,
+    default: "",
     trim:true,
   },
   price: {
@@ -108,7 +106,8 @@ const productsSchema = mongoose.Schema({
   reviews: [{type:ObjectId, ref: 'Reviews' }],
   productType:{
     type:String,
-    required: true,
+    required: false,
+    default: "general",
     lowercase: true,
   },
   description: {

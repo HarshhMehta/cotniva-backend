@@ -8,16 +8,20 @@ const { cloudinaryServices } = require("./cloudinary.service");
 exports.createProductService = async (data) => {
   const product = await Product.create(data);
   const { _id: productId, brand, category } = product;
-  //update Brand
-  await Brand.updateOne(
-    { _id: brand.id },
-    { $push: { products: productId } }
-  );
-  //Category Brand
-  await Category.updateOne(
-    { _id: category.id },
-    { $push: { products: productId } }
-  );
+  // update Brand only if brand id exists
+  if (brand?.id) {
+    await Brand.updateOne(
+      { _id: brand.id },
+      { $push: { products: productId } }
+    );
+  }
+  // Category
+  if (category?.id) {
+    await Category.updateOne(
+      { _id: category.id },
+      { $push: { products: productId } }
+    );
+  }
   return product;
 };
 
@@ -158,6 +162,7 @@ exports.updateProductService = async (id, currProduct) => {
     product.productType = currProduct.productType;
     product.description = currProduct.description;
     product.additionalInformation = currProduct.additionalInformation;
+    product.sizes = currProduct.sizes || [];
     product.offerDate.startDate = currProduct.offerDate.startDate;
     product.offerDate.endDate = currProduct.offerDate.endDate;
 
@@ -169,7 +174,9 @@ exports.updateProductService = async (id, currProduct) => {
 
 
 exports.getNewArrivalProducts = async () => {
-  const result = await Product.find({ tags: "new-arrival" })  // ✅ change karo
+  const result = await Product.find({
+    $or: [{ newArrival: true }, { tags: "new-arrival" }],
+  })
     .populate("reviews")
     .sort({ createdAt: -1 })
     .limit(8);

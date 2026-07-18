@@ -16,7 +16,8 @@ const CategorySchema = mongoose.Schema({
    productType:{
     type:String,
     trim:true,
-    required:true,
+    required: false,
+    default: "general",
     lowercase: true,
    },
    description:{
