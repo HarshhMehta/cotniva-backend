@@ -12,6 +12,7 @@ router.get('/all', productController.getAllProducts);
 // get offer timer product
 router.get('/offer', productController.getOfferTimerProducts);
 router.get('/new-arrival', productController.getNewArrivalProducts);
+router.get('/best-seller', productController.getBestSellerProducts);
 // top rated products
 router.get('/top-rated', productController.getTopRatedProducts);
 // reviews products

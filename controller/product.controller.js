@@ -38,6 +38,18 @@ exports.getNewArrivalProducts = async (req, res, next) => {
   }
 };
 
+exports.getBestSellerProducts = async (req, res, next) => {
+  try {
+    const products = await productServices.getBestSellerProducts();
+    res.status(200).json({
+      success: true,
+      data: products,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 
 // add all product
 module.exports.addAllProducts = async (req,res,next) => {

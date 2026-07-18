@@ -154,8 +154,9 @@ exports.updateProductService = async (id, currProduct) => {
     product.parent = currProduct.parent;
     product.children = currProduct.children;
     product.price = currProduct.price;
-    product.featured = currProduct.featured;
-    product.newArrival = currProduct.newArrival;
+    product.featured = !!currProduct.featured;
+    product.newArrival = !!currProduct.newArrival;
+    product.bestSeller = !!currProduct.bestSeller;
     product.discount = currProduct.discount;
     product.quantity = currProduct.quantity;
     product.status = currProduct.status;
@@ -181,6 +182,38 @@ exports.getNewArrivalProducts = async () => {
     .sort({ createdAt: -1 })
     .limit(8);
   return result;
+};
+
+/**
+ * Best Sellers:
+ * 1) Admin checkbox (bestSeller: true)
+ * 2) Else if orders exist → by sellCount
+ * 3) Else (starting) → latest products so section still shows
+ */
+exports.getBestSellerProducts = async () => {
+  const adminSelected = await Product.find({ bestSeller: true })
+    .populate("reviews")
+    .sort({ createdAt: -1 })
+    .limit(8);
+  if (adminSelected.length > 0) return adminSelected;
+
+  const Order = require("../model/Order");
+  const totalOrders = await Order.countDocuments();
+
+  if (totalOrders > 0) {
+    const auto = await Product.find({ sellCount: { $gt: 0 } })
+      .populate("reviews")
+      .sort({ sellCount: -1 })
+      .limit(8);
+    if (auto.length > 0) return auto;
+  }
+
+  // Starting fallback — show latest products until admin marks Best Sellers
+  const fallback = await Product.find({})
+    .populate("reviews")
+    .sort({ createdAt: -1 })
+    .limit(8);
+  return fallback;
 };
 
 
