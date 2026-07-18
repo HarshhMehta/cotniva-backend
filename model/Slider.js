@@ -7,6 +7,17 @@ const sliderSchema = mongoose.Schema({
     required: [true, "Please provide slider image"],
     validate: [validator.isURL, "Please provide valid url"],
   },
+  // Optional mobile-specific image (portrait / smaller crop)
+  mobileImg: {
+    type: String,
+    default: "",
+    validate: {
+      validator: function (v) {
+        return !v || validator.isURL(v);
+      },
+      message: "Please provide valid mobile image url",
+    },
+  },
   title: {
     type: String,
     trim: true,
