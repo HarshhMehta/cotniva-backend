@@ -14,11 +14,18 @@ const userSchema = mongoose.Schema(
     },
     email: {
       type: String,
-      validate: [validator.isEmail, "Provide a valid Email"],
+      validate: {
+        validator: function (v) {
+          if (!v) return true;
+          return validator.isEmail(v);
+        },
+        message: "Provide a valid Email",
+      },
       trim: true,
       lowercase: true,
       unique: true,
-      required: [true, "Email address is required"],
+      sparse: true,
+      required: false,
     },
     password: {
       type: String,
@@ -34,21 +41,21 @@ const userSchema = mongoose.Schema(
 
     contactNumber: {
       type: String,
-      validate: [
-        validator.isMobilePhone,
-        "Please provide a valid contact number",
-      ],
+      required: false,
     },
 
     shippingAddress: String,
 
     imageURL: {
       type: String,
-      validate: [validator.isURL, "Please provide a valid url"],
+      required: false,
     },
     phone: {
       type: String,
       required: false,
+      unique: true,
+      sparse: true,
+      index: true,
     },
     address: {
       type: String,
@@ -77,8 +84,7 @@ const userSchema = mongoose.Schema(
 );
 
 userSchema.pre("save", function (next) {
-  if (!this.isModified("password")) {
-    //  only run if password is modified, otherwise it will change every time we save the user!
+  if (!this.isModified("password") || !this.password) {
     return next();
   }
   const password = this.password;
