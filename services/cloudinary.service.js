@@ -8,13 +8,13 @@ const cloudinaryImageUpload = (imageBuffer) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       { 
         upload_preset: secret.cloudinary_upload_preset,
-        transformation: null,  // preset transformation override
-        crop: "limit",         // crop nahi karega, sirf limit karega
-        width: 1920,           // max width
-        height: 1000,          // max height
+        transformation: null,
+        crop: "limit",
+        width: 1920,
+        height: 1000,
       },
       (error, result) => {
-        if (error) rejsect(error);
+        if (error) reject(error);
         else resolve(result);
       }
     );
@@ -23,6 +23,38 @@ const cloudinaryImageUpload = (imageBuffer) => {
     bufferStream.push(imageBuffer);
     bufferStream.push(null);
 
+    bufferStream.pipe(uploadStream);
+  });
+};
+
+/** Upload image or video for gallery.
+ * Videos cannot use the image upload_preset (it applies g_auto which Cloudinary rejects on video).
+ */
+const cloudinaryMediaUpload = (fileBuffer, resourceType = "auto") => {
+  return new Promise((resolve, reject) => {
+    const options =
+      resourceType === "video"
+        ? {
+            resource_type: "video",
+            folder: "shofy-gallery",
+          }
+        : {
+            upload_preset: secret.cloudinary_upload_preset,
+            resource_type: "image",
+            folder: "shofy-gallery",
+          };
+
+    const uploadStream = cloudinary.uploader.upload_stream(
+      options,
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+
+    const bufferStream = new Readable();
+    bufferStream.push(fileBuffer);
+    bufferStream.push(null);
     bufferStream.pipe(uploadStream);
   });
 };
@@ -56,4 +88,5 @@ const cloudinaryImageDelete = async (public_id) => {
 exports.cloudinaryServices = {
   cloudinaryImageDelete,
   cloudinaryImageUpload,
+  cloudinaryMediaUpload,
 };

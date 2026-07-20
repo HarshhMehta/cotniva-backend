@@ -19,6 +19,41 @@ const saveImageCloudinary = async (req, res,next) => {
   }
 };
 
+// gallery — image or video
+const saveMediaCloudinary = async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "No file uploaded",
+      });
+    }
+    const mime = req.file.mimetype || "";
+    const resourceType = mime.startsWith("video/") ? "video" : "image";
+    const result = await cloudinaryServices.cloudinaryMediaUpload(
+      req.file.buffer,
+      resourceType
+    );
+    res.status(200).json({
+      success: true,
+      message: "media uploaded successfully",
+      data: {
+        url: result.secure_url,
+        id: result.public_id,
+        resourceType: result.resource_type || resourceType,
+      },
+    });
+  } catch (err) {
+    console.log(err);
+    return res.status(500).json({
+      success: false,
+      message:
+        err?.message ||
+        "Failed to upload media. For videos, avoid image-only Cloudinary presets.",
+    });
+  }
+};
+
 // add image
 const addMultipleImageCloudinary = async (req, res) => {
   try {
@@ -82,5 +117,6 @@ const cloudinaryDeleteController = async (req, res) => {
 exports.cloudinaryController = {
   cloudinaryDeleteController,
   saveImageCloudinary,
+  saveMediaCloudinary,
   addMultipleImageCloudinary,
 };

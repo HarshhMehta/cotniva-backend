@@ -3,10 +3,22 @@ const validator = require("validator");
 
 const gallerySchema = mongoose.Schema(
   {
+    // Media URL — image or video (Cloudinary / CDN)
     img: {
       type: String,
-      required: [true, "Please provide gallery image"],
+      required: [true, "Please provide gallery media URL"],
       validate: [validator.isURL, "Please provide valid url"],
+    },
+    // Optional poster/thumbnail for videos
+    poster: {
+      type: String,
+      required: false,
+      default: "",
+    },
+    mediaType: {
+      type: String,
+      enum: ["image", "video"],
+      default: "image",
     },
     link: {
       type: String,
