@@ -45,6 +45,12 @@ const productsSchema = mongoose.Schema({
     type: [String],
     default: [],
   },
+  sizeGuide: {
+    type: ObjectId,
+    ref: "SizeGuide",
+    required: false,
+    default: null,
+  },
   parent:{
     type:String,
     required:true,
@@ -113,6 +119,18 @@ const productsSchema = mongoose.Schema({
   description: {
     type: String,
     required: true
+  },
+  /** Accordion: Product Highlights (multiline text) */
+  productHighlights: {
+    type: String,
+    required: false,
+    default: "",
+  },
+  /** Accordion: Fabric & Care (multiline text) */
+  fabricCare: {
+    type: String,
+    required: false,
+    default: "",
   },
   videoId: {
     type: String,

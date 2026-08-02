@@ -1,11 +1,36 @@
 const Brand = require("../model/Brand");
 const Category = require("../model/Category");
 const Product = require("../model/Products");
+const mongoose = require("mongoose");
 const { cloudinaryServices } = require("./cloudinary.service");
 
+function slugify(text = "") {
+  return String(text)
+    .toLowerCase()
+    .trim()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function ensureUniqueSlug(base, excludeId) {
+  let slug = base || "product";
+  let n = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const candidate = n === 0 ? slug : `${slug}-${n}`;
+    const q = { slug: candidate };
+    if (excludeId) q._id = { $ne: excludeId };
+    const exists = await Product.findOne(q).select("_id").lean();
+    if (!exists) return candidate;
+    n += 1;
+  }
+}
 
 // create product service
 exports.createProductService = async (data) => {
+  const baseSlug = data.slug || slugify(data.title);
+  data.slug = await ensureUniqueSlug(baseSlug);
   const product = await Product.create(data);
   const { _id: productId, brand, category } = product;
   // update Brand only if brand id exists
@@ -116,12 +141,50 @@ exports.getTopRatedProductService = async () => {
   return topRatedProducts;
 };
 
-// get product data
-exports.getProductService = async (id) => {
-  const product = await Product.findById(id).populate({
-    path: "reviews",
-    populate: { path: "userId", select: "name email imageURL" },
-  });
+// get product by ObjectId OR slug
+exports.getProductService = async (idOrSlug) => {
+  const populateOpts = [
+    {
+      path: "reviews",
+      populate: { path: "userId", select: "name email imageURL" },
+    },
+    "sizeGuide",
+  ];
+
+  let product = null;
+  const isObjId =
+    mongoose.Types.ObjectId.isValid(idOrSlug) &&
+    String(new mongoose.Types.ObjectId(idOrSlug)) === String(idOrSlug);
+
+  if (isObjId) {
+    product = await Product.findById(idOrSlug).populate(populateOpts);
+  }
+  if (!product) {
+    product = await Product.findOne({ slug: idOrSlug }).populate(populateOpts);
+  }
+  if (!product) {
+    product = await Product.findOne({
+      slug: new RegExp(`^${String(idOrSlug).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+    }).populate(populateOpts);
+  }
+
+  // Match slugified title for older products without slug saved yet
+  if (!product) {
+    const titleGuess = String(idOrSlug).replace(/-/g, " ").trim();
+    product = await Product.findOne({
+      title: new RegExp(
+        `^${titleGuess.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "i"
+      ),
+    }).populate(populateOpts);
+  }
+
+  // Backfill slug for older products
+  if (product && !product.slug && product.title) {
+    product.slug = await ensureUniqueSlug(slugify(product.title), product._id);
+    await product.save();
+  }
+
   return product;
 };
 
@@ -147,7 +210,8 @@ exports.updateProductService = async (id, currProduct) => {
     product.category.id = currProduct.category.id;
     product.sku = currProduct.sku;
     product.img = currProduct.img;
-    product.slug = currProduct.slug;
+    const nextSlug = currProduct.slug || slugify(currProduct.title);
+    product.slug = await ensureUniqueSlug(nextSlug, product._id);
     product.unit = currProduct.unit;
     product.imageURLs = currProduct.imageURLs;
     product.tags = currProduct.tags;
@@ -162,8 +226,11 @@ exports.updateProductService = async (id, currProduct) => {
     product.status = currProduct.status;
     product.productType = currProduct.productType;
     product.description = currProduct.description;
+    product.productHighlights = currProduct.productHighlights || "";
+    product.fabricCare = currProduct.fabricCare || "";
     product.additionalInformation = currProduct.additionalInformation;
     product.sizes = currProduct.sizes || [];
+    product.sizeGuide = currProduct.sizeGuide || null;
     product.offerDate.startDate = currProduct.offerDate.startDate;
     product.offerDate.endDate = currProduct.offerDate.endDate;
 
@@ -178,9 +245,10 @@ exports.getNewArrivalProducts = async () => {
   const result = await Product.find({
     $or: [{ newArrival: true }, { tags: "new-arrival" }],
   })
-    .populate("reviews")
+    .select("title discount price status tags imageURLs sellCount newArrival createdAt")
     .sort({ createdAt: -1 })
-    .limit(8);
+    .limit(8)
+    .lean();
   return result;
 };
 
@@ -191,10 +259,14 @@ exports.getNewArrivalProducts = async () => {
  * 3) Else (starting) → latest products so section still shows
  */
 exports.getBestSellerProducts = async () => {
+  const fields =
+    "title discount price status tags imageURLs sellCount newArrival createdAt";
+
   const adminSelected = await Product.find({ bestSeller: true })
-    .populate("reviews")
+    .select(fields)
     .sort({ createdAt: -1 })
-    .limit(8);
+    .limit(8)
+    .lean();
   if (adminSelected.length > 0) return adminSelected;
 
   const Order = require("../model/Order");
@@ -202,17 +274,19 @@ exports.getBestSellerProducts = async () => {
 
   if (totalOrders > 0) {
     const auto = await Product.find({ sellCount: { $gt: 0 } })
-      .populate("reviews")
+      .select(fields)
       .sort({ sellCount: -1 })
-      .limit(8);
+      .limit(8)
+      .lean();
     if (auto.length > 0) return auto;
   }
 
   // Starting fallback — show latest products until admin marks Best Sellers
   const fallback = await Product.find({})
-    .populate("reviews")
+    .select(fields)
     .sort({ createdAt: -1 })
-    .limit(8);
+    .limit(8)
+    .lean();
   return fallback;
 };
 
