@@ -31,29 +31,25 @@ const notificationRoutes = require("./routes/notification.routes");
 const customerRoutes = require("./routes/customer.routes");
 const { startWhatsApp } = require("./services/whatsapp.service");
 
-const storeOrigins = [
-  secret.client_url,
-  process.env.STORE_URL,
-  process.env.CLIENT_URL,
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-].filter(Boolean);
+const {
+  getStoreOrigins,
+  getAdminOrigins,
+  isAllowedOrigin,
+} = require("./utils/allowed-origins");
 
 app.use(
   cors({
     origin(origin, cb) {
+      // Same-origin / server-to-server / mobile tools
       if (!origin) return cb(null, true);
-      if (storeOrigins.some((o) => origin === o || origin.startsWith(String(o).replace(/\/$/, "")))) {
-        return cb(null, true);
+
+      const allowed = [...getStoreOrigins(), ...getAdminOrigins()];
+      if (isAllowedOrigin(origin, allowed)) {
+        // Must echo exact origin when credentials: true
+        return cb(null, origin);
       }
-      if (
-        origin.includes("localhost:3001") ||
-        origin.includes("127.0.0.1:3001") ||
-        (secret.admin_url &&
-          origin.startsWith(String(secret.admin_url).replace(/\/$/, "")))
-      ) {
-        return cb(null, true);
-      }
+
+      console.warn(`[cors] blocked origin: ${origin}`);
       return cb(null, false);
     },
     credentials: true,
