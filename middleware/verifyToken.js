@@ -1,35 +1,34 @@
 const jwt = require("jsonwebtoken");
 const { promisify } = require("util");
 const { secret } = require("../config/secret");
-/**
- * 1. check if token exists
- * 2. if not token send res
- * 3. decode the token
- * 4. if valid next
- */
+const { readAccessFromRequest } = require("../services/session.service");
 
+/**
+ * Accept Bearer header OR HttpOnly access cookie.
+ */
 module.exports = async (req, res, next) => {
   try {
-    const token = req.headers?.authorization?.split(" ")?.[1];
+    const token = readAccessFromRequest(req);
 
-    if(!token){
+    if (!token) {
       return res.status(401).json({
         status: "fail",
-        error: "You are not logged in"
+        success: false,
+        error: "You are not logged in",
+        message: "You are not logged in",
       });
     }
-    
-    const decoded = await promisify(jwt.verify)(token,secret.token_secret);
 
+    const decoded = await promisify(jwt.verify)(token, secret.token_secret);
     req.user = decoded;
-
     next();
-
-
   } catch (error) {
-    res.status(403).json({
+    return res.status(401).json({
       status: "fail",
-      error: "Invalid token"
+      success: false,
+      error: "Invalid or expired token",
+      message: "Invalid or expired token",
+      code: "TOKEN_EXPIRED",
     });
   }
 };

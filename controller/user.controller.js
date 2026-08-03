@@ -5,6 +5,7 @@ const { sendEmail } = require("../config/email");
 const { generateToken, tokenForVerify } = require("../utils/token");
 const { secret } = require("../config/secret");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
+const { issueSession } = require("../services/session.service");
 
 // register user
 // sign up
@@ -97,18 +98,17 @@ module.exports.login = async (req, res,next) => {
       });
     }
 
-    const token = generateToken(user);
-
-    const { password: pwd, ...others } = user.toObject();
-
     trackCustomerActivity(user._id, "login", { source: "email" }).catch(() => {});
+
+    const session = await issueSession(req, res, user);
 
     res.status(200).json({
       status: "success",
       message: "Successfully logged in",
       data: {
-        user: others,
-        token,
+        user: session.user,
+        token: session.accessToken,
+        expiresIn: session.expiresIn,
       },
     });
   } catch (error) {
@@ -304,24 +304,26 @@ exports.updateUser = async (req, res,next) => {
 exports.signUpWithProvider = async (req, res,next) => {
   try {
     const user = jwt.decode(req.params.token);
+    if (!user?.email) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Invalid Google token",
+      });
+    }
     const isAdded = await User.findOne({ email: user.email });
     if (isAdded) {
-      const token = generateToken(isAdded);
       trackCustomerActivity(isAdded._id, "login", { source: "google" }).catch(
         () => {}
       );
+      const session = await issueSession(req, res, isAdded);
       res.status(200).send({
         status: "success",
         data: {
-          token,
+          token: session.accessToken,
+          expiresIn: session.expiresIn,
           user: {
-            _id: isAdded._id,
-            name: isAdded.name,
-            email: isAdded.email,
-            address: isAdded.address,
-            phone: isAdded.phone,
-            imageURL: isAdded.imageURL,
-            googleSignIn:true,
+            ...session.user,
+            googleSignIn: true,
           },
         },
       });
@@ -340,17 +342,15 @@ exports.signUpWithProvider = async (req, res,next) => {
       trackCustomerActivity(signUpUser._id, "login", { source: "google" }).catch(
         () => {}
       );
-      const token = generateToken(signUpUser);
+      const session = await issueSession(req, res, signUpUser);
       res.status(200).send({
         status: "success",
         data: {
-          token,
+          token: session.accessToken,
+          expiresIn: session.expiresIn,
           user: {
-            _id: signUpUser._id,
-            name: signUpUser.name,
-            email: signUpUser.email,
-            imageURL: signUpUser.imageURL,
-            googleSignIn:true,
+            ...session.user,
+            googleSignIn: true,
           }
         },
       });

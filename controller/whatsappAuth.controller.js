@@ -1,6 +1,5 @@
 const Otp = require("../model/Otp");
 const User = require("../model/User");
-const { generateToken } = require("../utils/token");
 const {
   startWhatsApp,
   getStatus,
@@ -9,6 +8,7 @@ const {
   normalizePhone,
 } = require("../services/whatsapp.service");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
+const { issueSession } = require("../services/session.service");
 
 const generateOtp = () =>
   String(Math.floor(100000 + Math.random() * 900000));
@@ -170,16 +170,16 @@ exports.verifyLoginOtp = async (req, res, next) => {
       () => {}
     );
 
-    const token = generateToken(user);
-    const { password, ...others } = user.toObject();
+    const session = await issueSession(req, res, user);
 
     res.status(200).json({
       success: true,
       status: "success",
       message: "Successfully logged in",
       data: {
-        user: others,
-        token,
+        user: session.user,
+        token: session.accessToken,
+        expiresIn: session.expiresIn,
       },
     });
   } catch (error) {
