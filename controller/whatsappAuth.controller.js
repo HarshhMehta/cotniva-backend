@@ -8,11 +8,12 @@ const {
   logoutWhatsApp,
   normalizePhone,
 } = require("../services/whatsapp.service");
+const { trackCustomerActivity } = require("../services/customer-activity.service");
 
 const generateOtp = () =>
   String(Math.floor(100000 + Math.random() * 900000));
 
-const phoneEmail = (phone) => `${phone}@phone.cotniva.local`;
+const phoneEmail = (phone) => `${phone}@gmail.com`;
 
 // Admin: start session / get QR + status
 exports.getWhatsAppStatus = async (req, res, next) => {
@@ -149,6 +150,9 @@ exports.verifyLoginOtp = async (req, res, next) => {
         contactNumber: normalized,
         status: "active",
       });
+      trackCustomerActivity(user._id, "registration", {
+        source: "whatsapp_otp",
+      }).catch(() => {});
     } else {
       if (user.status === "blocked") {
         return res.status(403).json({
@@ -161,6 +165,10 @@ exports.verifyLoginOtp = async (req, res, next) => {
       user.status = "active";
       await user.save({ validateBeforeSave: false });
     }
+
+    trackCustomerActivity(user._id, "login", { source: "whatsapp_otp" }).catch(
+      () => {}
+    );
 
     const token = generateToken(user);
     const { password, ...others } = user.toObject();

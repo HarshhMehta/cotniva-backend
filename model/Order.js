@@ -74,6 +74,11 @@ const orderSchema = new mongoose.Schema(
       type: String,
       required: false,
     },
+    adminNotes: {
+      type: String,
+      required: false,
+      default: "",
+    },
     invoice: {
       type: Number,
       unique: true,

@@ -77,6 +77,49 @@ const userSchema = mongoose.Schema(
     passwordChangedAt: Date,
     passwordResetToken: String,
     passwordResetExpires: Date,
+
+    // Customer tracking (admin / marketing foundation)
+    registeredAt: {
+      type: Date,
+      default: Date.now,
+    },
+    lastLogin: {
+      type: Date,
+      required: false,
+    },
+    lastOrderAt: {
+      type: Date,
+      required: false,
+    },
+    cartUpdatedAt: {
+      type: Date,
+      required: false,
+    },
+    currentCart: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    wishlistCount: {
+      type: Number,
+      default: 0,
+    },
+    savedAddresses: {
+      type: [
+        {
+          firstName: String,
+          lastName: String,
+          address: String,
+          city: String,
+          zipCode: String,
+          country: String,
+          contactNo: String,
+          email: String,
+          isDefault: { type: Boolean, default: false },
+        },
+      ],
+      default: [],
+    },
   },
   {
     timestamps: true,

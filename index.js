@@ -25,6 +25,8 @@ const galleryRoutes = require("./routes/gallery.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
 const homeRoutes = require("./routes/home.routes");
 const sizeGuideRoutes = require("./routes/sizeGuide.routes");
+const notificationRoutes = require("./routes/notification.routes");
+const customerRoutes = require("./routes/customer.routes");
 const {
   startWhatsApp,
 } = require("./services/whatsapp.service");
@@ -51,6 +53,8 @@ app.use("/api/gallery", galleryRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/home", homeRoutes);
 app.use("/api/size-guide", sizeGuideRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/customers", customerRoutes);
 // root route
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 app.listen(PORT, () => {

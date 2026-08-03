@@ -4,6 +4,7 @@ const User = require("../model/User");
 const { sendEmail } = require("../config/email");
 const { generateToken, tokenForVerify } = require("../utils/token");
 const { secret } = require("../config/secret");
+const { trackCustomerActivity } = require("../services/customer-activity.service");
 
 // register user
 // sign up
@@ -17,6 +18,9 @@ exports.signup = async (req, res,next) => {
       const token = saved_user.generateConfirmationToken();
 
       await saved_user.save({ validateBeforeSave: false });
+      trackCustomerActivity(saved_user._id, "registration", {
+        source: "email_signup",
+      }).catch(() => {});
 
       const mailData = {
         from: secret.email_user,
@@ -96,6 +100,8 @@ module.exports.login = async (req, res,next) => {
     const token = generateToken(user);
 
     const { password: pwd, ...others } = user.toObject();
+
+    trackCustomerActivity(user._id, "login", { source: "email" }).catch(() => {});
 
     res.status(200).json({
       status: "success",
@@ -301,6 +307,9 @@ exports.signUpWithProvider = async (req, res,next) => {
     const isAdded = await User.findOne({ email: user.email });
     if (isAdded) {
       const token = generateToken(isAdded);
+      trackCustomerActivity(isAdded._id, "login", { source: "google" }).catch(
+        () => {}
+      );
       res.status(200).send({
         status: "success",
         data: {
@@ -325,7 +334,12 @@ exports.signUpWithProvider = async (req, res,next) => {
       });
 
       const signUpUser = await newUser.save();
-      // console.log(signUpUser)
+      trackCustomerActivity(signUpUser._id, "registration", {
+        source: "google",
+      }).catch(() => {});
+      trackCustomerActivity(signUpUser._id, "login", { source: "google" }).catch(
+        () => {}
+      );
       const token = generateToken(signUpUser);
       res.status(200).send({
         status: "success",

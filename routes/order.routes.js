@@ -5,20 +5,41 @@ const {
   getOrders,
   updateOrderStatus,
   getSingleOrder,
+  createRazorpayOrder,
+  createMagicCheckoutOrder,
+  verifyRazorpayPayment,
+  magicShippingInfo,
+  magicGetPromotions,
+  magicApplyPromotion,
+  updateAdminNotes,
+  syncRazorpayAddress,
 } = require("../controller/order.controller");
 
-// router
 const router = express.Router();
 
-// get orders
+// Magic Checkout callbacks — must be before /:id
+router.post("/magic/shipping-info", magicShippingInfo);
+router.get("/magic/shipping-info", magicShippingInfo);
+router.post("/magic/promotions", magicGetPromotions);
+router.get("/magic/promotions", magicGetPromotions);
+router.post("/magic/apply-promotion", magicApplyPromotion);
+
 router.get("/orders", getOrders);
-// single order
-router.get("/:id", getSingleOrder);
-// add a create payment intent
+
+// Razorpay
+router.post("/create-razorpay-order", createRazorpayOrder);
+router.post("/create-magic-checkout", createMagicCheckoutOrder);
+router.post("/verify-razorpay", verifyRazorpayPayment);
+
+// legacy Stripe (disabled)
 router.post("/create-payment-intent", paymentIntent);
-// save Order
+
 router.post("/saveOrder", addOrder);
-// update status
 router.patch("/update-status/:id", updateOrderStatus);
+router.patch("/update-notes/:id", updateAdminNotes);
+router.post("/sync-razorpay-address/:id", syncRazorpayAddress);
+
+// single order last
+router.get("/:id", getSingleOrder);
 
 module.exports = router;
