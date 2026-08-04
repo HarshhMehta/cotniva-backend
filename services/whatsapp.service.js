@@ -2,6 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const qrcode = require("qrcode");
 const pino = require("pino");
+const { useMongoAuthState } = require("./whatsapp-mongo-auth");
 
 const AUTH_DIR = path.join(__dirname, "..", "whatsapp-auth");
 
@@ -10,6 +11,7 @@ let latestQr = null;
 let connectionStatus = "disconnected"; // disconnected | qr | connecting | connected
 let connectedNumber = null;
 let startPromise = null;
+let clearAuthFn = null;
 
 const ensureAuthDir = () => {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -29,12 +31,14 @@ const startWhatsApp = async () => {
     ensureAuthDir();
     const {
       default: makeWASocket,
-      useMultiFileAuthState,
       DisconnectReason,
       fetchLatestBaileysVersion,
     } = getBaileys();
 
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    // Persist session in MongoDB so Render restarts do not force re-scan
+    const { state, saveCreds, clearAuth } = await useMongoAuthState(AUTH_DIR);
+    clearAuthFn = clearAuth;
+
     const { version } = await fetchLatestBaileysVersion();
 
     connectionStatus = "connecting";
@@ -46,6 +50,8 @@ const startWhatsApp = async () => {
       logger: pino({ level: "silent" }),
       printQRInTerminal: false,
       browser: ["Cotniva", "Chrome", "1.0.0"],
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -88,7 +94,20 @@ const startWhatsApp = async () => {
             );
           }, 3000);
         } else {
-          console.log("WhatsApp logged out");
+          console.log("WhatsApp logged out — clearing persisted auth");
+          // True logout from phone / admin Disconnect: wipe Mongo so QR is required
+          if (typeof clearAuthFn === "function") {
+            clearAuthFn().catch((e) =>
+              console.error("Clear WhatsApp Mongo auth:", e.message)
+            );
+          }
+          try {
+            if (fs.existsSync(AUTH_DIR)) {
+              fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            }
+          } catch (err) {
+            console.error("Clear auth dir error:", err.message);
+          }
         }
       }
     });
@@ -143,6 +162,14 @@ const logoutWhatsApp = async () => {
   connectionStatus = "disconnected";
   connectedNumber = null;
   startPromise = null;
+
+  try {
+    if (typeof clearAuthFn === "function") {
+      await clearAuthFn();
+    }
+  } catch (err) {
+    console.error("Clear WhatsApp Mongo auth error:", err.message);
+  }
 
   try {
     if (fs.existsSync(AUTH_DIR)) {

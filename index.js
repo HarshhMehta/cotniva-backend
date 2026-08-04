@@ -63,8 +63,6 @@ app.use(cookieParser());
 app.use(morgan("dev"));
 app.use(express.static(path.join(__dirname, "public")));
 
-connectDB();
-
 app.use("/api/auth", authRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/category", categoryRoutes);
@@ -87,13 +85,6 @@ app.use("/api/customers", customerRoutes);
 
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 
-app.listen(PORT, () => {
-  console.log(`server running on port ${PORT}`);
-  startWhatsApp().catch((err) =>
-    console.log("WhatsApp auto-start:", err.message)
-  );
-});
-
 app.use(globalErrorHandler);
 app.use((req, res, next) => {
   res.status(404).json({
@@ -103,5 +94,20 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+connectDB()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`server running on port ${PORT}`);
+      // After Mongo is ready — restore Baileys session from DB
+      startWhatsApp().catch((err) =>
+        console.log("WhatsApp auto-start:", err.message)
+      );
+    });
+  })
+  .catch((err) => {
+    console.error("Failed to start server:", err.message);
+    process.exit(1);
+  });
 
 module.exports = app;
