@@ -132,7 +132,7 @@ exports.refresh = async (req, res, next) => {
   try {
     const raw = readRefreshFromRequest(req);
     if (!raw) {
-      clearSessionCookies(res);
+      clearSessionCookies(res, req);
       return res.status(401).json({
         success: false,
         code: "NO_REFRESH_TOKEN",
@@ -158,7 +158,7 @@ exports.refresh = async (req, res, next) => {
   } catch (error) {
     // Only wipe cookies for genuine session death — not rotation races
     if (error.clearCookies) {
-      clearSessionCookies(res);
+      clearSessionCookies(res, req);
     }
     const status = error.statusCode || 401;
     res.status(status).json({
@@ -173,13 +173,13 @@ exports.logout = async (req, res, next) => {
   try {
     const raw = readRefreshFromRequest(req);
     await revokeCurrentRefresh(raw);
-    clearSessionCookies(res);
+    clearSessionCookies(res, req);
     res.status(200).json({
       success: true,
       message: "Logged out",
     });
   } catch (error) {
-    clearSessionCookies(res);
+    clearSessionCookies(res, req);
     next(error);
   }
 };
@@ -193,7 +193,7 @@ exports.logoutAll = async (req, res, next) => {
       });
     }
     await revokeAllUserSessions(req.user._id);
-    clearSessionCookies(res);
+    clearSessionCookies(res, req);
     res.status(200).json({
       success: true,
       message: "Logged out from all devices",
@@ -272,7 +272,7 @@ exports.changePassword = async (req, res, next) => {
 
     // Force re-login everywhere
     await revokeAllUserSessions(user._id);
-    clearSessionCookies(res);
+    clearSessionCookies(res, req);
 
     res.status(200).json({
       success: true,

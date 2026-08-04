@@ -14,23 +14,87 @@ const isProd = () =>
   String(secret.env || process.env.NODE_ENV || "").toLowerCase() ===
   "production";
 
+const requestIsHttps = (req) => {
+  if (!req) return false;
+  const xf = String(req.headers?.["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  if (xf === "https") return true;
+  if (req.secure) return true;
+  return String(req.protocol || "").toLowerCase() === "https";
+};
+
 /**
  * Cross-site store (Vercel) → API host needs SameSite=None; Secure.
- * - production / NODE_ENV=production → always
- * - CROSS_SITE_COOKIES=true → force (API must be https)
- * - CROSS_SITE_COOKIES=false → force off (local http)
- * Do not infer from STORE_URL alone — local API + Vercel STORE_URL would
- * set Secure cookies on http://localhost and the browser would drop them.
+ *
+ * Evidence from production DevTools: cookies were issued as SameSite=Lax /
+ * Secure=false because NODE_ENV was not "production" on the API host.
+ * Lax cookies are NOT sent on cross-site fetch() from cotniva.vercel.app
+ * → /api/auth/me returns 401 after every refresh.
+ *
+ * Detect from the live request when possible so we never depend on NODE_ENV alone.
  */
-const useCrossSiteCookies = () => {
+const useCrossSiteCookies = (req) => {
   const flag = String(process.env.CROSS_SITE_COOKIES || "").toLowerCase();
   if (flag === "false" || flag === "0") return false;
   if (flag === "true" || flag === "1") return true;
   if (String(process.env.COOKIE_SAMESITE || "").toLowerCase() === "none") {
     return true;
   }
-  return isProd();
+  if (isProd()) return true;
+
+  if (req) {
+    const origin = String(req.get?.("origin") || "").trim();
+    if (origin.startsWith("https://")) {
+      try {
+        const originHost = new URL(origin).hostname;
+        const apiHost = String(req.hostname || req.get?.("host") || "")
+          .split(":")[0]
+          .toLowerCase();
+        // Different host + https Origin = browser will treat cookies as cross-site
+        if (originHost && apiHost && originHost !== apiHost) {
+          return true;
+        }
+      } catch {
+        return true;
+      }
+    }
+    // HTTPS API behind a proxy (Render) — prefer cross-site-safe cookies
+    if (requestIsHttps(req) && origin.startsWith("http")) {
+      // http localhost → https API is also cross-site; need None+Secure
+      // but Secure cookies work on https API responses
+      try {
+        const originHost = new URL(origin).hostname;
+        const apiHost = String(req.hostname || "").split(":")[0];
+        if (originHost && apiHost && originHost !== apiHost) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return false;
 };
+
+const baseCookieFlags = (req) => {
+  const crossSite = useCrossSiteCookies(req);
+  return {
+    httpOnly: true,
+    secure: crossSite,
+    sameSite: crossSite ? "none" : "lax",
+    path: "/",
+    // Never set Domain to the Vercel host — cookie must be host-only on the API.
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+};
+
+const cookieOptions = (maxAgeMs, req) => ({
+  ...baseCookieFlags(req),
+  maxAge: maxAgeMs,
+});
+
+const clearCookieOptions = (req) => baseCookieFlags(req);
 
 const hashToken = (raw) =>
   crypto.createHash("sha256").update(String(raw)).digest("hex");
@@ -47,32 +111,6 @@ const generateAccessToken = (user) => {
 };
 
 const generateRefreshRaw = () => crypto.randomBytes(48).toString("hex");
-
-const cookieOptions = (maxAgeMs) => {
-  const crossSite = useCrossSiteCookies();
-  return {
-    httpOnly: true,
-    // SameSite=None requires Secure; browsers reject otherwise
-    secure: crossSite,
-    sameSite: crossSite ? "none" : "lax",
-    path: "/",
-    maxAge: maxAgeMs,
-    // Do NOT set Domain to the Vercel host — cookie must stay on the API host
-    // so credentials:include sends it on cross-site XHR to the API.
-    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
-  };
-};
-
-const clearCookieOptions = () => {
-  const crossSite = useCrossSiteCookies();
-  return {
-    httpOnly: true,
-    secure: crossSite,
-    sameSite: crossSite ? "none" : "lax",
-    path: "/",
-    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
-  };
-};
 
 const getClientMeta = (req) => {
   const deviceId =
@@ -128,7 +166,7 @@ const resumeAfterRotationRace = async (req, res, revokedDoc) => {
   }
 
   const accessToken = generateAccessToken(replacement.user);
-  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS));
+  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS, req));
   // Refresh cookie already updated by the winning request — leave it alone.
 
   return {
@@ -164,8 +202,8 @@ const issueSession = async (req, res, user) => {
   user.lastLogin = new Date();
   await user.save({ validateBeforeSave: false }).catch(() => {});
 
-  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS));
-  res.cookie(REFRESH_COOKIE, refreshRaw, cookieOptions(REFRESH_MS));
+  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS, req));
+  res.cookie(REFRESH_COOKIE, refreshRaw, cookieOptions(REFRESH_MS, req));
 
   return {
     accessToken,
@@ -274,8 +312,8 @@ const rotateRefreshSession = async (req, res, rawRefresh) => {
   });
 
   const accessToken = generateAccessToken(user);
-  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS));
-  res.cookie(REFRESH_COOKIE, newRaw, cookieOptions(REFRESH_MS));
+  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS, req));
+  res.cookie(REFRESH_COOKIE, newRaw, cookieOptions(REFRESH_MS, req));
 
   return {
     accessToken,
@@ -284,9 +322,35 @@ const rotateRefreshSession = async (req, res, rawRefresh) => {
   };
 };
 
-const clearSessionCookies = (res) => {
-  res.clearCookie(ACCESS_COOKIE, clearCookieOptions());
-  res.clearCookie(REFRESH_COOKIE, clearCookieOptions());
+/**
+ * Clear auth cookies. Clears both cross-site and lax variants so stale
+ * SameSite=Lax cookies left by older deploys are actually removed.
+ */
+const clearSessionCookies = (res, req) => {
+  const primary = clearCookieOptions(req);
+  res.clearCookie(ACCESS_COOKIE, primary);
+  res.clearCookie(REFRESH_COOKIE, primary);
+
+  // Purge legacy Lax/non-Secure cookies from misconfigured NODE_ENV deploys
+  const legacy = {
+    httpOnly: true,
+    secure: false,
+    sameSite: "lax",
+    path: "/",
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+  res.clearCookie(ACCESS_COOKIE, legacy);
+  res.clearCookie(REFRESH_COOKIE, legacy);
+
+  const cross = {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+  res.clearCookie(ACCESS_COOKIE, cross);
+  res.clearCookie(REFRESH_COOKIE, cross);
 };
 
 const revokeCurrentRefresh = async (rawRefresh) => {

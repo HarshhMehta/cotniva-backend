@@ -37,6 +37,9 @@ const {
   isAllowedOrigin,
 } = require("./utils/allowed-origins");
 
+// Render / proxies terminate TLS — needed for secure cookies + req.protocol
+app.set("trust proxy", 1);
+
 app.use(
   cors({
     origin(origin, cb) {
