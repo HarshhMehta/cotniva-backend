@@ -14,6 +14,24 @@ const isProd = () =>
   String(secret.env || process.env.NODE_ENV || "").toLowerCase() ===
   "production";
 
+/**
+ * Cross-site store (Vercel) → API host needs SameSite=None; Secure.
+ * - production / NODE_ENV=production → always
+ * - CROSS_SITE_COOKIES=true → force (API must be https)
+ * - CROSS_SITE_COOKIES=false → force off (local http)
+ * Do not infer from STORE_URL alone — local API + Vercel STORE_URL would
+ * set Secure cookies on http://localhost and the browser would drop them.
+ */
+const useCrossSiteCookies = () => {
+  const flag = String(process.env.CROSS_SITE_COOKIES || "").toLowerCase();
+  if (flag === "false" || flag === "0") return false;
+  if (flag === "true" || flag === "1") return true;
+  if (String(process.env.COOKIE_SAMESITE || "").toLowerCase() === "none") {
+    return true;
+  }
+  return isProd();
+};
+
 const hashToken = (raw) =>
   crypto.createHash("sha256").update(String(raw)).digest("hex");
 
@@ -30,22 +48,31 @@ const generateAccessToken = (user) => {
 
 const generateRefreshRaw = () => crypto.randomBytes(48).toString("hex");
 
-const cookieOptions = (maxAgeMs) => ({
-  httpOnly: true,
-  secure: isProd(),
-  sameSite: isProd() ? "none" : "lax",
-  path: "/",
-  maxAge: maxAgeMs,
-  ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
-});
+const cookieOptions = (maxAgeMs) => {
+  const crossSite = useCrossSiteCookies();
+  return {
+    httpOnly: true,
+    // SameSite=None requires Secure; browsers reject otherwise
+    secure: crossSite,
+    sameSite: crossSite ? "none" : "lax",
+    path: "/",
+    maxAge: maxAgeMs,
+    // Do NOT set Domain to the Vercel host — cookie must stay on the API host
+    // so credentials:include sends it on cross-site XHR to the API.
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+};
 
-const clearCookieOptions = () => ({
-  httpOnly: true,
-  secure: isProd(),
-  sameSite: isProd() ? "none" : "lax",
-  path: "/",
-  ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
-});
+const clearCookieOptions = () => {
+  const crossSite = useCrossSiteCookies();
+  return {
+    httpOnly: true,
+    secure: crossSite,
+    sameSite: crossSite ? "none" : "lax",
+    path: "/",
+    ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
+  };
+};
 
 const getClientMeta = (req) => {
   const deviceId =
@@ -69,6 +96,47 @@ const publicUser = (user) => {
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;
   return obj;
+};
+
+const sessionError = (message, statusCode, code, clearCookies = true) => {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  err.clearCookies = clearCookies;
+  return err;
+};
+
+/**
+ * Concurrent refresh lost the race: old token already rotated.
+ * Re-issue access cookie only; do not clear refresh (winner set it).
+ */
+const resumeAfterRotationRace = async (req, res, revokedDoc) => {
+  if (!revokedDoc?.replacedByHash) return null;
+
+  const replacement = await RefreshToken.findOne({
+    tokenHash: revokedDoc.replacedByHash,
+    revokedAt: null,
+  }).populate("user");
+
+  if (
+    !replacement ||
+    replacement.expiresAt.getTime() < Date.now() ||
+    !replacement.user ||
+    replacement.user.status === "blocked"
+  ) {
+    return null;
+  }
+
+  const accessToken = generateAccessToken(replacement.user);
+  res.cookie(ACCESS_COOKIE, accessToken, cookieOptions(ACCESS_MS));
+  // Refresh cookie already updated by the winning request — leave it alone.
+
+  return {
+    accessToken,
+    user: publicUser(replacement.user),
+    expiresIn: ACCESS_MS / 1000,
+    alreadyRotated: true,
+  };
 };
 
 /**
@@ -108,63 +176,100 @@ const issueSession = async (req, res, user) => {
 
 /**
  * Rotate refresh token; issue new access + refresh cookies.
+ * Uses atomic claim so only one concurrent refresh wins; losers resume
+ * without clearing cookies (ALREADY_ROTATED soft-success path).
  */
 const rotateRefreshSession = async (req, res, rawRefresh) => {
   const tokenHash = hashToken(rawRefresh);
-  const existing = await RefreshToken.findOne({ tokenHash }).populate("user");
-
-  if (!existing || existing.revokedAt) {
-    const err = new Error("Invalid refresh token");
-    err.statusCode = 401;
-    throw err;
-  }
-
-  if (existing.expiresAt.getTime() < Date.now()) {
-    await RefreshToken.deleteOne({ _id: existing._id });
-    const err = new Error("Refresh token expired");
-    err.statusCode = 401;
-    throw err;
-  }
-
   const { deviceId } = getClientMeta(req);
-  if (existing.deviceId && deviceId !== "unknown" && existing.deviceId !== deviceId) {
-    // Soft check — allow if device unknown to avoid locking out old clients,
-    // but reject hard mismatches (replay from another device id).
+
+  const preview = await RefreshToken.findOne({ tokenHash }).populate("user");
+
+  if (!preview) {
+    throw sessionError("Invalid refresh token", 401, "INVALID_REFRESH", true);
+  }
+
+  if (preview.expiresAt.getTime() < Date.now()) {
+    await RefreshToken.deleteOne({ _id: preview._id }).catch(() => {});
+    throw sessionError("Refresh token expired", 401, "REFRESH_EXPIRED", true);
+  }
+
+  if (preview.revokedAt) {
+    const resumed = await resumeAfterRotationRace(req, res, preview);
+    if (resumed) return resumed;
+    throw sessionError("Invalid refresh token", 401, "REFRESH_REVOKED", true);
+  }
+
+  if (
+    preview.deviceId &&
+    deviceId !== "unknown" &&
+    preview.deviceId !== deviceId
+  ) {
     await RefreshToken.updateOne(
-      { _id: existing._id },
+      { _id: preview._id },
       { $set: { revokedAt: new Date() } }
     );
-    const err = new Error("Session device mismatch");
-    err.statusCode = 401;
-    throw err;
+    throw sessionError(
+      "Session device mismatch",
+      401,
+      "DEVICE_MISMATCH",
+      true
+    );
   }
 
-  const user = existing.user;
+  const user = preview.user;
   if (!user || user.status === "blocked") {
-    await RefreshToken.deleteMany({ user: existing.user });
-    const err = new Error("Account unavailable");
-    err.statusCode = 403;
-    throw err;
+    await RefreshToken.deleteMany({ user: preview.user }).catch(() => {});
+    throw sessionError(
+      "Account unavailable",
+      403,
+      "ACCOUNT_UNAVAILABLE",
+      true
+    );
   }
 
-  // Rotate: revoke old, create new
   const newRaw = generateRefreshRaw();
   const newHash = hashToken(newRaw);
   const expiresAt = new Date(Date.now() + REFRESH_MS);
 
-  existing.revokedAt = new Date();
-  existing.replacedByHash = newHash;
-  await existing.save();
+  // Atomic win: only one request can claim a non-revoked token
+  const claimed = await RefreshToken.findOneAndUpdate(
+    {
+      tokenHash,
+      revokedAt: null,
+      expiresAt: { $gt: new Date() },
+    },
+    {
+      $set: {
+        revokedAt: new Date(),
+        replacedByHash: newHash,
+      },
+    },
+    { new: false }
+  );
+
+  if (!claimed) {
+    // Lost race after preview — soft-resume
+    const existing = await RefreshToken.findOne({ tokenHash });
+    const resumed = await resumeAfterRotationRace(req, res, existing);
+    if (resumed) return resumed;
+    throw sessionError(
+      "Invalid refresh token",
+      401,
+      "REFRESH_REUSE",
+      false // do not clear — sibling may have just set cookies
+    );
+  }
 
   await RefreshToken.create({
     user: user._id,
     tokenHash: newHash,
-    deviceId: existing.deviceId || deviceId,
-    userAgent: req.get("user-agent") || existing.userAgent,
+    deviceId: preview.deviceId || deviceId,
+    userAgent: req.get("user-agent") || preview.userAgent,
     ip:
       req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() ||
       req.ip ||
-      existing.ip,
+      preview.ip,
     expiresAt,
   });
 
@@ -227,4 +332,5 @@ module.exports = {
   readRefreshFromRequest,
   publicUser,
   getClientMeta,
+  useCrossSiteCookies,
 };

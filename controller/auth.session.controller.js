@@ -132,8 +132,10 @@ exports.refresh = async (req, res, next) => {
   try {
     const raw = readRefreshFromRequest(req);
     if (!raw) {
+      clearSessionCookies(res);
       return res.status(401).json({
         success: false,
+        code: "NO_REFRESH_TOKEN",
         message: "No refresh token",
       });
     }
@@ -143,7 +145,10 @@ exports.refresh = async (req, res, next) => {
     res.status(200).json({
       success: true,
       status: "success",
-      message: "Session refreshed",
+      message: session.alreadyRotated
+        ? "Session already refreshed"
+        : "Session refreshed",
+      code: session.alreadyRotated ? "ALREADY_ROTATED" : undefined,
       data: {
         user: session.user,
         token: session.accessToken,
@@ -151,10 +156,14 @@ exports.refresh = async (req, res, next) => {
       },
     });
   } catch (error) {
-    clearSessionCookies(res);
+    // Only wipe cookies for genuine session death — not rotation races
+    if (error.clearCookies) {
+      clearSessionCookies(res);
+    }
     const status = error.statusCode || 401;
     res.status(status).json({
       success: false,
+      code: error.code || "REFRESH_FAILED",
       message: error.message || "Could not refresh session",
     });
   }
