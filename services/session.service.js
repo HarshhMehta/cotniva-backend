@@ -26,14 +26,14 @@ const requestIsHttps = (req) => {
 };
 
 /**
- * Cross-site store (Vercel) → API host needs SameSite=None; Secure.
+ * Cross-site vs first-party cookie mode.
  *
- * Evidence from production DevTools: cookies were issued as SameSite=Lax /
- * Secure=false because NODE_ENV was not "production" on the API host.
- * Lax cookies are NOT sent on cross-site fetch() from cotniva.vercel.app
- * → /api/auth/me returns 401 after every refresh.
+ * Desktop Chrome often still sends SameSite=None third-party cookies.
+ * Mobile Safari / Chrome Android block them → /api/auth/me gets no cookie → 401.
  *
- * Detect from the live request when possible so we never depend on NODE_ENV alone.
+ * When the store is reverse-proxied (Vercel rewrite), the browser sees
+ * first-party cookies on the store host. Detect that via x-forwarded-host
+ * matching Origin and use SameSite=Lax; Secure (HTTPS).
  */
 const useCrossSiteCookies = (req) => {
   const flag = String(process.env.CROSS_SITE_COOKIES || "").toLowerCase();
@@ -42,17 +42,33 @@ const useCrossSiteCookies = (req) => {
   if (String(process.env.COOKIE_SAMESITE || "").toLowerCase() === "none") {
     return true;
   }
-  if (isProd()) return true;
 
   if (req) {
     const origin = String(req.get?.("origin") || "").trim();
+    const forwardedHost = String(req.get?.("x-forwarded-host") || "")
+      .split(",")[0]
+      .trim()
+      .split(":")[0]
+      .toLowerCase();
+
+    // Proxied same-site (browser ↔ Vercel ↔ API): first-party cookies
+    if (origin && forwardedHost) {
+      try {
+        const originHost = new URL(origin).hostname.toLowerCase();
+        if (originHost && originHost === forwardedHost) {
+          return false;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     if (origin.startsWith("https://")) {
       try {
-        const originHost = new URL(origin).hostname;
+        const originHost = new URL(origin).hostname.toLowerCase();
         const apiHost = String(req.hostname || req.get?.("host") || "")
           .split(":")[0]
           .toLowerCase();
-        // Different host + https Origin = browser will treat cookies as cross-site
         if (originHost && apiHost && originHost !== apiHost) {
           return true;
         }
@@ -60,10 +76,8 @@ const useCrossSiteCookies = (req) => {
         return true;
       }
     }
-    // HTTPS API behind a proxy (Render) — prefer cross-site-safe cookies
+
     if (requestIsHttps(req) && origin.startsWith("http")) {
-      // http localhost → https API is also cross-site; need None+Secure
-      // but Secure cookies work on https API responses
       try {
         const originHost = new URL(origin).hostname;
         const apiHost = String(req.hostname || "").split(":")[0];
@@ -74,17 +88,21 @@ const useCrossSiteCookies = (req) => {
     }
   }
 
+  // Production without proxy still needs None (desktop); mobile needs proxy.
+  if (isProd()) return true;
   return false;
 };
 
 const baseCookieFlags = (req) => {
   const crossSite = useCrossSiteCookies(req);
+  // First-party on HTTPS (Vercel proxy) still needs Secure
+  const secure = crossSite || requestIsHttps(req) || isProd();
   return {
     httpOnly: true,
-    secure: crossSite,
+    secure,
     sameSite: crossSite ? "none" : "lax",
     path: "/",
-    // Never set Domain to the Vercel host — cookie must be host-only on the API.
+    // Do not set Domain to the storefront host from the API process.
     ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
   };
 };
