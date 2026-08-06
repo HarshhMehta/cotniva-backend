@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const qrcode = require("qrcode");
 const pino = require("pino");
-const { useMongoAuthState } = require("./whatsapp-mongo-auth");
+const { useHybridAuthState } = require("./whatsapp-mongo-auth");
 
 const AUTH_DIR = path.join(__dirname, "..", "whatsapp-auth");
 
@@ -12,7 +12,9 @@ let connectionStatus = "disconnected"; // disconnected | qr | connecting | conne
 let connectedNumber = null;
 let startPromise = null;
 let clearAuthFn = null;
+let syncDiskToMongoFn = null;
 let retries = 0;
+let syncTimer = null;
 
 const ensureAuthDir = () => {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -22,11 +24,6 @@ const ensureAuthDir = () => {
 
 const getBaileys = () => require("@whiskeysockets/baileys");
 
-/**
- * Same pattern as KwikTeach WA server — simple Baileys socket.
- * Auth state is Mongo-backed (Render disk is ephemeral) but API matches
- * useMultiFileAuthState so send behaves the same for new numbers.
- */
 const startWhatsApp = async () => {
   if (sock && (connectionStatus === "connected" || connectionStatus === "qr")) {
     return sock;
@@ -41,8 +38,11 @@ const startWhatsApp = async () => {
       fetchLatestBaileysVersion,
     } = getBaileys();
 
-    const { state, saveCreds, clearAuth } = await useMongoAuthState(AUTH_DIR);
+    // Same as KwikTeach: useMultiFileAuthState under the hood + Mongo mirror
+    const { state, saveCreds, clearAuth, syncDiskToMongo } =
+      await useHybridAuthState(AUTH_DIR);
     clearAuthFn = clearAuth;
+    syncDiskToMongoFn = syncDiskToMongo;
 
     const { version } = await fetchLatestBaileysVersion();
     console.log(`WhatsApp Baileys v${version.join(".")}`);
@@ -50,7 +50,6 @@ const startWhatsApp = async () => {
     connectionStatus = "connecting";
     latestQr = null;
 
-    // Match working KwikTeach socket options (auth: state as-is)
     sock = makeWASocket({
       version,
       auth: state,
@@ -63,6 +62,14 @@ const startWhatsApp = async () => {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    if (syncTimer) clearInterval(syncTimer);
+    // Persist session keys often (Render can kill the process anytime)
+    syncTimer = setInterval(() => {
+      if (typeof syncDiskToMongoFn === "function") {
+        syncDiskToMongoFn().catch(() => {});
+      }
+    }, 20000);
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -84,6 +91,9 @@ const startWhatsApp = async () => {
           sock?.user?.id?.split(":")?.[0] || sock?.user?.id || null;
         retries = 0;
         console.log("WhatsApp connected:", connectedNumber);
+        if (typeof syncDiskToMongoFn === "function") {
+          syncDiskToMongoFn().catch(() => {});
+        }
       }
 
       if (connection === "close") {
@@ -99,15 +109,8 @@ const startWhatsApp = async () => {
           console.log("WhatsApp logged out — clearing persisted auth");
           if (typeof clearAuthFn === "function") {
             clearAuthFn().catch((e) =>
-              console.error("Clear WhatsApp Mongo auth:", e.message)
+              console.error("Clear WhatsApp auth:", e.message)
             );
-          }
-          try {
-            if (fs.existsSync(AUTH_DIR)) {
-              fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-            }
-          } catch (err) {
-            console.error("Clear auth dir error:", err.message);
           }
           retries = 0;
           setTimeout(() => {
@@ -156,7 +159,7 @@ const normalizePhone = (phone) => {
   return digits;
 };
 
-/** Same JID format as KwikTeach formatPhone() */
+/** Same as KwikTeach formatPhone() */
 const formatPhoneJid = (phone) => {
   const clean = normalizePhone(phone);
   if (clean.length === 10) return `91${clean}@s.whatsapp.net`;
@@ -166,18 +169,56 @@ const formatPhoneJid = (phone) => {
   return `${clean}@s.whatsapp.net`;
 };
 
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * KwikTeach-style send — direct sendMessage, no whitelist / onWhatsApp gate.
- * Works for new (unknown) numbers the same way as your other WA OTP server.
+ * Send text like KwikTeach /send-message — works for new numbers when session is healthy.
+ * Also verifies the number exists on WhatsApp so we don't fake "OTP sent".
  */
 const sendWhatsAppText = async (phone, message) => {
   if (connectionStatus !== "connected" || !sock) {
     throw new Error("WhatsApp is not connected. Scan QR in admin panel.");
   }
 
-  const jid = formatPhoneJid(phone);
-  await sock.sendMessage(jid, { text: message });
-  console.log(`WhatsApp message sent to ${jid}`);
+  const digits = normalizePhone(phone);
+  let jid = formatPhoneJid(digits);
+
+  // Confirm number is on WhatsApp (avoids silent fake success)
+  try {
+    const results = await sock.onWhatsApp(digits);
+    const hit = Array.isArray(results)
+      ? results.find((r) => r?.exists)
+      : null;
+    if (!hit) {
+      const err = new Error(
+        "This mobile number is not registered on WhatsApp."
+      );
+      err.code = "WA_NOT_REGISTERED";
+      throw err;
+    }
+    if (hit.jid) jid = hit.jid;
+  } catch (err) {
+    if (err.code === "WA_NOT_REGISTERED") throw err;
+    console.warn("onWhatsApp check skipped:", err.message);
+  }
+
+  try {
+    await sock.presenceSubscribe(jid);
+    await sock.sendPresenceUpdate("composing", jid);
+    await delay(400);
+  } catch (err) {
+    console.warn("presence warm-up skipped:", err.message);
+  }
+
+  const sent = await sock.sendMessage(jid, { text: message });
+  console.log(`WhatsApp message sent to ${jid}`, {
+    id: sent?.key?.id || null,
+  });
+
+  if (typeof syncDiskToMongoFn === "function") {
+    syncDiskToMongoFn().catch(() => {});
+  }
+
   return true;
 };
 
@@ -202,21 +243,17 @@ const logoutWhatsApp = async () => {
   connectedNumber = null;
   startPromise = null;
   retries = 0;
+  if (syncTimer) {
+    clearInterval(syncTimer);
+    syncTimer = null;
+  }
 
   try {
     if (typeof clearAuthFn === "function") {
       await clearAuthFn();
     }
   } catch (err) {
-    console.error("Clear WhatsApp Mongo auth error:", err.message);
-  }
-
-  try {
-    if (fs.existsSync(AUTH_DIR)) {
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-    }
-  } catch (err) {
-    console.error("Clear auth dir error:", err.message);
+    console.error("Clear WhatsApp auth error:", err.message);
   }
 
   setTimeout(() => {

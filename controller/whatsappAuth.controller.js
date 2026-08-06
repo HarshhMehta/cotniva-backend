@@ -82,9 +82,19 @@ exports.sendLoginOtp = async (req, res, next) => {
     } catch (sendErr) {
       console.error("WhatsApp OTP delivery failed:", {
         phone: normalized,
+        code: sendErr.code,
         message: sendErr.message,
       });
       await Otp.deleteMany({ phone: normalized });
+
+      if (sendErr.code === "WA_NOT_REGISTERED") {
+        return res.status(400).json({
+          success: false,
+          message:
+            "This number is not on WhatsApp. Please use a WhatsApp number or Google login.",
+        });
+      }
+
       return res.status(503).json({
         success: false,
         message:

@@ -3,11 +3,7 @@ const path = require("path");
 const mongoose = require("mongoose");
 const WhatsAppAuth = require("../model/WhatsAppAuth");
 
-const fixKey = (key) =>
-  String(key || "")
-    .replace(/\//g, "__")
-    .replace(/:/g, "-")
-    .replace(/\.json$/i, "");
+const DOC_ID = "session_bundle";
 
 const waitForMongo = async (timeoutMs = 45000) => {
   if (mongoose.connection.readyState === 1) return;
@@ -31,104 +27,141 @@ const waitForMongo = async (timeoutMs = 45000) => {
   throw new Error("MongoDB is not connected — cannot restore WhatsApp session");
 };
 
+const ensureDir = (dir) => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+};
+
 /**
- * Baileys auth state backed by MongoDB (survives process restarts).
- * Mirrors useMultiFileAuthState API.
+ * Read all *.json files in auth dir → { filename: parsedObject }
  */
-const useMongoAuthState = async (authDirForMigration) => {
-  await waitForMongo();
-
-  const {
-    initAuthCreds,
-    BufferJSON,
-    proto,
-  } = require("@whiskeysockets/baileys");
-
-  const writeData = async (data, id) => {
-    const _id = fixKey(id);
-    const payload = JSON.parse(JSON.stringify(data, BufferJSON.replacer));
-    await WhatsAppAuth.findOneAndUpdate(
-      { _id },
-      { $set: { data: payload } },
-      { upsert: true, new: true }
-    );
-  };
-
-  const readData = async (id) => {
-    const doc = await WhatsAppAuth.findById(fixKey(id)).lean();
-    if (!doc?.data) return null;
-    return JSON.parse(JSON.stringify(doc.data), BufferJSON.reviver);
-  };
-
-  const removeData = async (id) => {
-    await WhatsAppAuth.deleteOne({ _id: fixKey(id) });
-  };
-
-  // One-time migrate from local whatsapp-auth/ if Mongo is empty
-  let creds = await readData("creds");
-  if (!creds && authDirForMigration && fs.existsSync(authDirForMigration)) {
+const readAuthDirFiles = (authDir) => {
+  if (!fs.existsSync(authDir)) return {};
+  const out = {};
+  for (const file of fs.readdirSync(authDir)) {
+    if (!file.endsWith(".json")) continue;
     try {
-      const files = fs.readdirSync(authDirForMigration);
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-        const raw = fs.readFileSync(
-          path.join(authDirForMigration, file),
-          "utf8"
-        );
-        const parsed = JSON.parse(raw, BufferJSON.reviver);
-        await writeData(parsed, file);
-      }
-      creds = await readData("creds");
-      if (creds) {
+      out[file] = JSON.parse(
+        fs.readFileSync(path.join(authDir, file), "utf8")
+      );
+    } catch (_) {}
+  }
+  return out;
+};
+
+/**
+ * Write file map back to auth dir (for restore on boot).
+ */
+const writeAuthDirFiles = (authDir, files) => {
+  ensureDir(authDir);
+  for (const [file, data] of Object.entries(files || {})) {
+    if (!file.endsWith(".json") || data == null) continue;
+    fs.writeFileSync(
+      path.join(authDir, file),
+      JSON.stringify(data, null, 2),
+      "utf8"
+    );
+  }
+};
+
+/**
+ * KwikTeach-compatible auth:
+ * - Baileys uses normal useMultiFileAuthState (same send path that works for unknown numbers)
+ * - We mirror the whole session folder into Mongo so Render restarts keep the QR session
+ */
+const useHybridAuthState = async (authDir) => {
+  await waitForMongo();
+  ensureDir(authDir);
+
+  const { useMultiFileAuthState } = require("@whiskeysockets/baileys");
+
+  // Restore from Mongo → disk before Baileys opens the folder
+  try {
+    const doc = await WhatsAppAuth.findById(DOC_ID).lean();
+    const files = doc?.data?.files;
+    if (files && typeof files === "object" && Object.keys(files).length > 0) {
+      // Only restore if disk is empty / missing creds
+      const diskCreds = path.join(authDir, "creds.json");
+      if (!fs.existsSync(diskCreds)) {
+        writeAuthDirFiles(authDir, files);
         console.log(
-          "WhatsApp auth migrated from disk → MongoDB (survives restarts)"
+          `WhatsApp session restored from Mongo (${Object.keys(files).length} files)`
         );
       }
-    } catch (err) {
-      console.error("WhatsApp auth migrate error:", err.message);
     }
+  } catch (err) {
+    console.error("WhatsApp Mongo restore error:", err.message);
   }
 
-  if (!creds) creds = initAuthCreds();
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+  const syncDiskToMongo = async () => {
+    try {
+      const files = readAuthDirFiles(authDir);
+      await WhatsAppAuth.findOneAndUpdate(
+        { _id: DOC_ID },
+        {
+          $set: {
+            data: { files, updatedAt: new Date().toISOString() },
+          },
+        },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error("WhatsApp Mongo sync error:", err.message);
+    }
+  };
+
+  // Migrate old per-key Mongo auth → disk once, if needed
+  try {
+    const diskCreds = path.join(authDir, "creds.json");
+    if (!fs.existsSync(diskCreds)) {
+      const credsDoc = await WhatsAppAuth.findById("creds").lean();
+      if (credsDoc?.data) {
+        const { BufferJSON } = require("@whiskeysockets/baileys");
+        const creds = JSON.parse(
+          JSON.stringify(credsDoc.data),
+          BufferJSON.reviver
+        );
+        fs.writeFileSync(
+          path.join(authDir, "creds.json"),
+          JSON.stringify(creds, BufferJSON.replacer, 2)
+        );
+        console.log("WhatsApp legacy creds restored to disk");
+      }
+    }
+  } catch (_) {}
+
+  const saveCredsAndSync = async () => {
+    await saveCreds();
+    await syncDiskToMongo();
+  };
+
+  // Initial sync so Mongo has a copy even before first creds.update
+  await syncDiskToMongo();
+
+  const clearAuth = async () => {
+    try {
+      await WhatsAppAuth.deleteMany({});
+    } catch (_) {}
+    try {
+      if (fs.existsSync(authDir)) {
+        fs.rmSync(authDir, { recursive: true, force: true });
+      }
+    } catch (_) {}
+    ensureDir(authDir);
+  };
 
   return {
-    state: {
-      creds,
-      keys: {
-        get: async (type, ids) => {
-          const data = {};
-          await Promise.all(
-            ids.map(async (id) => {
-              let value = await readData(`${type}-${id}`);
-              if (type === "app-state-sync-key" && value) {
-                value = proto.Message.AppStateSyncKeyData.fromObject(value);
-              }
-              data[id] = value;
-            })
-          );
-          return data;
-        },
-        set: async (data) => {
-          const tasks = [];
-          for (const category of Object.keys(data || {})) {
-            for (const id of Object.keys(data[category] || {})) {
-              const value = data[category][id];
-              const key = `${category}-${id}`;
-              tasks.push(value ? writeData(value, key) : removeData(key));
-            }
-          }
-          await Promise.all(tasks);
-        },
-      },
-    },
-    saveCreds: async () => writeData(creds, "creds"),
-    clearAuth: async () => {
-      await WhatsAppAuth.deleteMany({});
-    },
+    state,
+    saveCreds: saveCredsAndSync,
+    syncDiskToMongo,
+    clearAuth,
   };
 };
 
 module.exports = {
-  useMongoAuthState,
+  useHybridAuthState,
   waitForMongo,
+  // keep old name exported for safety
+  useMongoAuthState: useHybridAuthState,
 };
