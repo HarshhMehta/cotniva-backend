@@ -77,14 +77,26 @@ exports.sendLoginOtp = async (req, res, next) => {
 
     const message = `Your Cotniva login OTP is *${otp}*. Valid for 5 minutes. Do not share this code with anyone.`;
 
-    await sendWhatsAppText(normalized, message);
+    try {
+      await sendWhatsAppText(normalized, message);
+    } catch (sendErr) {
+      console.error("WhatsApp OTP delivery failed:", {
+        phone: normalized,
+        message: sendErr.message,
+      });
+      await Otp.deleteMany({ phone: normalized });
+      return res.status(503).json({
+        success: false,
+        message:
+          "Could not send WhatsApp OTP. Please try again or use Google login.",
+      });
+    }
 
     res.status(200).json({
       success: true,
       message: "OTP sent to your WhatsApp",
       data: {
         phone: normalized,
-        // only expose last 4 for UI
         masked: `******${normalized.slice(-4)}`,
       },
     });

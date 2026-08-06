@@ -12,6 +12,7 @@ let connectionStatus = "disconnected"; // disconnected | qr | connecting | conne
 let connectedNumber = null;
 let startPromise = null;
 let clearAuthFn = null;
+let retries = 0;
 
 const ensureAuthDir = () => {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -21,6 +22,11 @@ const ensureAuthDir = () => {
 
 const getBaileys = () => require("@whiskeysockets/baileys");
 
+/**
+ * Same pattern as KwikTeach WA server — simple Baileys socket.
+ * Auth state is Mongo-backed (Render disk is ephemeral) but API matches
+ * useMultiFileAuthState so send behaves the same for new numbers.
+ */
 const startWhatsApp = async () => {
   if (sock && (connectionStatus === "connected" || connectionStatus === "qr")) {
     return sock;
@@ -35,23 +41,25 @@ const startWhatsApp = async () => {
       fetchLatestBaileysVersion,
     } = getBaileys();
 
-    // Persist session in MongoDB so Render restarts do not force re-scan
     const { state, saveCreds, clearAuth } = await useMongoAuthState(AUTH_DIR);
     clearAuthFn = clearAuth;
 
     const { version } = await fetchLatestBaileysVersion();
+    console.log(`WhatsApp Baileys v${version.join(".")}`);
 
     connectionStatus = "connecting";
     latestQr = null;
 
+    // Match working KwikTeach socket options (auth: state as-is)
     sock = makeWASocket({
       version,
       auth: state,
       logger: pino({ level: "silent" }),
       printQRInTerminal: false,
-      browser: ["Cotniva", "Chrome", "1.0.0"],
+      browser: ["Cotniva", "Chrome", "120.0"],
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
       syncFullHistory: false,
-      markOnlineOnConnect: false,
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -62,7 +70,7 @@ const startWhatsApp = async () => {
       if (qr) {
         connectionStatus = "qr";
         try {
-          latestQr = await qrcode.toDataURL(qr);
+          latestQr = await qrcode.toDataURL(qr, { width: 300, margin: 1 });
         } catch (err) {
           console.error("QR generate error:", err.message);
           latestQr = null;
@@ -74,28 +82,21 @@ const startWhatsApp = async () => {
         latestQr = null;
         connectedNumber =
           sock?.user?.id?.split(":")?.[0] || sock?.user?.id || null;
+        retries = 0;
         console.log("WhatsApp connected:", connectedNumber);
       }
 
       if (connection === "close") {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
         connectionStatus = "disconnected";
         connectedNumber = null;
         latestQr = null;
         sock = null;
         startPromise = null;
 
-        if (shouldReconnect) {
-          console.log("WhatsApp disconnected, reconnecting...");
-          setTimeout(() => {
-            startWhatsApp().catch((e) =>
-              console.error("WhatsApp reconnect failed:", e.message)
-            );
-          }, 3000);
-        } else {
+        if (loggedOut) {
           console.log("WhatsApp logged out — clearing persisted auth");
-          // True logout from phone / admin Disconnect: wipe Mongo so QR is required
           if (typeof clearAuthFn === "function") {
             clearAuthFn().catch((e) =>
               console.error("Clear WhatsApp Mongo auth:", e.message)
@@ -108,6 +109,23 @@ const startWhatsApp = async () => {
           } catch (err) {
             console.error("Clear auth dir error:", err.message);
           }
+          retries = 0;
+          setTimeout(() => {
+            startWhatsApp().catch((e) =>
+              console.error("WhatsApp restart failed:", e.message)
+            );
+          }, 3000);
+        } else if (retries < 5) {
+          retries += 1;
+          const delay = Math.min(3000 * retries, 30000);
+          console.log(
+            `WhatsApp disconnected, reconnecting in ${delay}ms (attempt ${retries})...`
+          );
+          setTimeout(() => {
+            startWhatsApp().catch((e) =>
+              console.error("WhatsApp reconnect failed:", e.message)
+            );
+          }, delay);
         }
       }
     });
@@ -138,20 +156,41 @@ const normalizePhone = (phone) => {
   return digits;
 };
 
+/** Same JID format as KwikTeach formatPhone() */
+const formatPhoneJid = (phone) => {
+  const clean = normalizePhone(phone);
+  if (clean.length === 10) return `91${clean}@s.whatsapp.net`;
+  if (clean.startsWith("91") && clean.length === 12) {
+    return `${clean}@s.whatsapp.net`;
+  }
+  return `${clean}@s.whatsapp.net`;
+};
+
+/**
+ * KwikTeach-style send — direct sendMessage, no whitelist / onWhatsApp gate.
+ * Works for new (unknown) numbers the same way as your other WA OTP server.
+ */
 const sendWhatsAppText = async (phone, message) => {
   if (connectionStatus !== "connected" || !sock) {
     throw new Error("WhatsApp is not connected. Scan QR in admin panel.");
   }
 
-  const jid = `${normalizePhone(phone)}@s.whatsapp.net`;
+  const jid = formatPhoneJid(phone);
   await sock.sendMessage(jid, { text: message });
+  console.log(`WhatsApp message sent to ${jid}`);
   return true;
 };
 
 const logoutWhatsApp = async () => {
   try {
     if (sock) {
-      await sock.logout();
+      try {
+        await sock.logout();
+      } catch (_) {}
+      try {
+        sock.ev.removeAllListeners();
+        sock.end?.();
+      } catch (_) {}
     }
   } catch (err) {
     console.error("WhatsApp logout error:", err.message);
@@ -162,6 +201,7 @@ const logoutWhatsApp = async () => {
   connectionStatus = "disconnected";
   connectedNumber = null;
   startPromise = null;
+  retries = 0;
 
   try {
     if (typeof clearAuthFn === "function") {
@@ -178,6 +218,12 @@ const logoutWhatsApp = async () => {
   } catch (err) {
     console.error("Clear auth dir error:", err.message);
   }
+
+  setTimeout(() => {
+    startWhatsApp().catch((e) =>
+      console.error("WhatsApp restart after logout failed:", e.message)
+    );
+  }, 1500);
 };
 
 module.exports = {
