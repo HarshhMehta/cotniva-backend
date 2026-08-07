@@ -82,6 +82,7 @@ app.use("/api/home", homeRoutes);
 app.use("/api/size-guide", sizeGuideRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/customers", customerRoutes);
+app.use("/api/checkout-abandon", require("./routes/checkoutAbandon.routes"));
 
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 
