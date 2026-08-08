@@ -172,6 +172,32 @@ const formatPhoneJid = (phone) => {
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Ensure the socket has actually reached the open state.
+ * startWhatsApp() creates a socket before Baileys finishes connecting, so
+ * callers must not treat its resolved promise as a connected session.
+ */
+const waitForWhatsAppConnected = async (timeoutMs = 15000) => {
+  if (connectionStatus === "connected" && sock) return true;
+
+  try {
+    await startWhatsApp();
+  } catch (err) {
+    console.error("WhatsApp start while waiting failed:", err.message);
+    return false;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (connectionStatus === "connected" && sock) return true;
+    // A QR means the saved session is no longer usable and needs admin action.
+    if (connectionStatus === "qr") return false;
+    await delay(250);
+  }
+
+  return connectionStatus === "connected" && !!sock;
+};
+
+/**
  * Send text like KwikTeach /send-message — works for new numbers when session is healthy.
  * Also verifies the number exists on WhatsApp so we don't fake "OTP sent".
  */
@@ -267,6 +293,7 @@ module.exports = {
   startWhatsApp,
   getStatus,
   sendWhatsAppText,
+  waitForWhatsAppConnected,
   logoutWhatsApp,
   normalizePhone,
   AUTH_DIR,

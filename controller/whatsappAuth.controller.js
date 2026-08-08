@@ -4,6 +4,7 @@ const {
   startWhatsApp,
   getStatus,
   sendWhatsAppText,
+  waitForWhatsAppConnected,
   logoutWhatsApp,
   normalizePhone,
 } = require("../services/whatsapp.service");
@@ -53,19 +54,15 @@ exports.sendLoginOtp = async (req, res, next) => {
       });
     }
 
-    const status = getStatus();
-    if (status.status !== "connected") {
-      // try starting in case not started yet
-      try {
-        await startWhatsApp();
-      } catch (_) {}
-    }
-
-    if (getStatus().status !== "connected") {
+    const connected = await waitForWhatsAppConnected(15000);
+    if (!connected) {
+      const currentStatus = getStatus().status;
       return res.status(503).json({
         success: false,
         message:
-          "WhatsApp login is temporarily unavailable. Please try Google login or try again later.",
+          currentStatus === "qr"
+            ? "WhatsApp needs to be reconnected by the store. Please use Google login or try again shortly."
+            : "WhatsApp is reconnecting. Please wait a few seconds and try again.",
       });
     }
 
