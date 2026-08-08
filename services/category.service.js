@@ -50,6 +50,20 @@ exports.updateCategoryService = async (id,payload) => {
   const result = await Category.findOneAndUpdate({ _id:id }, payload, {
     new: true,
   })
+
+  const nextParent = String(payload?.parent || '').trim()
+  if (nextParent && nextParent !== isExist.parent) {
+    await Products.updateMany(
+      { 'category.id': isExist._id },
+      {
+        $set: {
+          'category.name': nextParent,
+          parent: nextParent,
+        },
+      }
+    )
+  }
+
   return result
 }
 

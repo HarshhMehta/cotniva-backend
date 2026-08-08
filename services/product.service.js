@@ -191,9 +191,13 @@ exports.getProductService = async (idOrSlug) => {
 // get product data
 exports.getRelatedProductService = async (productId) => {
   const currentProduct = await Product.findById(productId);
+  if (!currentProduct) return [];
 
+  const categoryFilter = currentProduct.category?.id
+    ? { "category.id": currentProduct.category.id }
+    : { "category.name": currentProduct.category?.name };
   const relatedProducts = await Product.find({
-    "category.name": currentProduct.category.name,
+    ...categoryFilter,
     _id: { $ne: productId }, // Exclude the current product ID
   });
   return relatedProducts;
