@@ -23,6 +23,7 @@ const adminRoutes = require("./routes/admin.routes");
 const cloudinaryRoutes = require("./routes/cloudinary.routes");
 const sliderRoutes = require("./routes/slider.routes");
 const topbarRoutes = require("./routes/topbar.routes");
+const storeSettingsRoutes = require("./routes/store-settings.routes");
 const galleryRoutes = require("./routes/gallery.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
 const homeRoutes = require("./routes/home.routes");
@@ -30,6 +31,8 @@ const sizeGuideRoutes = require("./routes/sizeGuide.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const customerRoutes = require("./routes/customer.routes");
 const { startWhatsApp } = require("./services/whatsapp.service");
+const { razorpayWebhook } = require("./controller/order.controller");
+const { startHoldExpiryJob } = require("./services/inventory.service");
 
 const {
   getStoreOrigins,
@@ -58,6 +61,11 @@ app.use(
     credentials: true,
   })
 );
+app.post(
+  "/api/order/razorpay-webhook",
+  express.raw({ type: "application/json" }),
+  razorpayWebhook
+);
 app.use(express.json());
 app.use(cookieParser());
 app.use(morgan("dev"));
@@ -76,6 +84,7 @@ app.use("/api/cloudinary", cloudinaryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/slider", sliderRoutes);
 app.use("/api/topbar", topbarRoutes);
+app.use("/api/store-settings", storeSettingsRoutes);
 app.use("/api/gallery", galleryRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/home", homeRoutes);
@@ -100,6 +109,7 @@ connectDB()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`server running on port ${PORT}`);
+      startHoldExpiryJob();
       // After Mongo is ready — restore Baileys session from DB
       startWhatsApp().catch((err) =>
         console.log("WhatsApp auto-start:", err.message)

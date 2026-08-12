@@ -5,7 +5,7 @@ const Category = require("../model/Category");
 const Product = require("../model/Products");
 
 const PRODUCT_CARD_FIELDS =
-  "title discount price status tags imageURLs sellCount newArrival createdAt sizes sizeGuide";
+  "title discount price status tags imageURLs sellCount newArrival createdAt sizes sizeInventory quantity sizeGuide";
 
 async function getTopBarData() {
   let topbar = await TopBar.findOne().lean();

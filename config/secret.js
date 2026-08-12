@@ -24,6 +24,7 @@ module.exports.secret = {
   stripe_key: process.env.STRIPE_KEY,
   razorpay_key_id: process.env.RAZORPAY_KEY_ID,
   razorpay_key_secret: process.env.RAZORPAY_KEY_SECRET,
+  razorpay_webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET,
   client_url: process.env.STORE_URL, 
   admin_url:process.env.ADMIN_URL, 
 }

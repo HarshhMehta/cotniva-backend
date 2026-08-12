@@ -3,6 +3,13 @@ const Category = require("../model/Category");
 const Product = require("../model/Products");
 const mongoose = require("mongoose");
 const { cloudinaryServices } = require("./cloudinary.service");
+const {
+  normalizeSizeInventory,
+  stockStatusFromQty,
+} = require("./inventory.service");
+
+const LISTING_FIELDS =
+  "title discount price status tags imageURLs sellCount newArrival createdAt sizes sizeInventory quantity sizeGuide";
 
 function slugify(text = "") {
   return String(text)
@@ -31,6 +38,19 @@ async function ensureUniqueSlug(base, excludeId) {
 exports.createProductService = async (data) => {
   const baseSlug = data.slug || slugify(data.title);
   data.slug = await ensureUniqueSlug(baseSlug);
+  const sizes = Array.isArray(data.sizes) ? data.sizes : [];
+  if (Array.isArray(data.sizeInventory)) {
+    data.sizeInventory = normalizeSizeInventory(data.sizeInventory, sizes);
+    if (data.sizeInventory.length > 0) {
+      data.quantity = data.sizeInventory.reduce(
+        (sum, row) => sum + (Number(row.quantity) || 0),
+        0
+      );
+    }
+  }
+  if (data.status !== "discontinued") {
+    data.status = stockStatusFromQty(data.quantity, data.status);
+  }
   const product = await Product.create(data);
   const { _id: productId, brand, category } = product;
   // update Brand only if brand id exists
@@ -203,45 +223,79 @@ exports.getRelatedProductService = async (productId) => {
   return relatedProducts;
 };
 
-// update a product
+// update a product — field-specific $set so live stock / sellCount are not overwritten
 exports.updateProductService = async (id, currProduct) => {
-  const product = await Product.findById(id);
-  if (product) {
-    product.title = currProduct.title;
-    product.brand.name = currProduct.brand.name;
-    product.brand.id = currProduct.brand.id;
-    product.category.name = currProduct.category.name;
-    product.category.id = currProduct.category.id;
-    product.sku = currProduct.sku;
-    product.img = currProduct.img;
-    const nextSlug = currProduct.slug || slugify(currProduct.title);
-    product.slug = await ensureUniqueSlug(nextSlug, product._id);
-    product.unit = currProduct.unit;
-    product.imageURLs = currProduct.imageURLs;
-    product.tags = currProduct.tags;
-    product.parent = currProduct.parent;
-    product.children = currProduct.children;
-    product.price = currProduct.price;
-    product.featured = !!currProduct.featured;
-    product.newArrival = !!currProduct.newArrival;
-    product.bestSeller = !!currProduct.bestSeller;
-    product.discount = currProduct.discount;
-    product.quantity = currProduct.quantity;
-    product.status = currProduct.status;
-    product.productType = currProduct.productType;
-    product.description = currProduct.description;
-    product.productHighlights = currProduct.productHighlights || "";
-    product.fabricCare = currProduct.fabricCare || "";
-    product.additionalInformation = currProduct.additionalInformation;
-    product.sizes = currProduct.sizes || [];
-    product.sizeGuide = currProduct.sizeGuide || null;
-    product.offerDate.startDate = currProduct.offerDate.startDate;
-    product.offerDate.endDate = currProduct.offerDate.endDate;
+  const existing = await Product.findById(id).select("status").lean();
+  if (!existing) return null;
 
-    await product.save();
+  const nextSlug = currProduct.slug || slugify(currProduct.title);
+  const $set = {
+    title: currProduct.title,
+    sku: currProduct.sku,
+    unit: currProduct.unit,
+    imageURLs: currProduct.imageURLs,
+    tags: currProduct.tags,
+    parent: currProduct.parent,
+    children: currProduct.children,
+    price: currProduct.price,
+    featured: !!currProduct.featured,
+    newArrival: !!currProduct.newArrival,
+    bestSeller: !!currProduct.bestSeller,
+    discount: currProduct.discount,
+    productType: currProduct.productType,
+    description: currProduct.description,
+    productHighlights: currProduct.productHighlights || "",
+    fabricCare: currProduct.fabricCare || "",
+    additionalInformation: currProduct.additionalInformation,
+    sizeGuide: currProduct.sizeGuide || null,
+    slug: await ensureUniqueSlug(nextSlug, id),
+  };
+
+  if (currProduct.brand) {
+    $set["brand.name"] = currProduct.brand.name;
+    $set["brand.id"] = currProduct.brand.id;
+  }
+  if (currProduct.category) {
+    $set["category.name"] = currProduct.category.name;
+    $set["category.id"] = currProduct.category.id;
+  }
+  if (currProduct.offerDate) {
+    $set["offerDate.startDate"] = currProduct.offerDate.startDate;
+    $set["offerDate.endDate"] = currProduct.offerDate.endDate;
   }
 
-  return product;
+  const sizes = Array.isArray(currProduct.sizes) ? currProduct.sizes : [];
+  const hasInvPayload = Array.isArray(currProduct.sizeInventory);
+  const requestedStatus = currProduct.status;
+
+  if (hasInvPayload) {
+    $set.sizes = sizes;
+    if (sizes.length === 0) {
+      $set.sizeInventory = [];
+      if (currProduct.quantity != null) {
+        $set.quantity = Math.max(0, Number(currProduct.quantity) || 0);
+      }
+    } else {
+      const inv = normalizeSizeInventory(currProduct.sizeInventory, sizes);
+      $set.sizeInventory = inv;
+      $set.quantity = inv.reduce(
+        (sum, row) => sum + (Number(row.quantity) || 0),
+        0
+      );
+    }
+  }
+
+  if (requestedStatus === "discontinued") {
+    $set.status = "discontinued";
+  } else if ($set.quantity != null) {
+    $set.status = stockStatusFromQty($set.quantity, requestedStatus);
+  } else if (requestedStatus && requestedStatus !== "discontinued") {
+    // Catalog-only edit: do not force status from stale quantity; keep live status
+    // unless admin explicitly sets discontinued (handled above).
+  }
+
+  await Product.updateOne({ _id: id }, { $set });
+  return Product.findById(id);
 };
 
 
@@ -249,7 +303,7 @@ exports.getNewArrivalProducts = async () => {
   const result = await Product.find({
     $or: [{ newArrival: true }, { tags: "new-arrival" }],
   })
-    .select("title discount price status tags imageURLs sellCount newArrival createdAt")
+    .select(LISTING_FIELDS)
     .sort({ createdAt: -1 })
     .limit(8)
     .lean();
@@ -263,8 +317,7 @@ exports.getNewArrivalProducts = async () => {
  * 3) Else (starting) → latest products so section still shows
  */
 exports.getBestSellerProducts = async () => {
-  const fields =
-    "title discount price status tags imageURLs sellCount newArrival createdAt";
+  const fields = LISTING_FIELDS;
 
   const adminSelected = await Product.find({ bestSeller: true })
     .select(fields)

@@ -94,6 +94,15 @@ const orderSchema = new mongoose.Schema(
   }
 );
 
+orderSchema.index(
+  { "paymentIntent.razorpay_payment_id": 1 },
+  { unique: true, sparse: true }
+);
+orderSchema.index(
+  { "paymentIntent.razorpay_order_id": 1 },
+  { unique: true, sparse: true }
+);
+
 // define pre-save middleware to generate the invoice number
 orderSchema.pre('save', async function (next) {
   const order = this;

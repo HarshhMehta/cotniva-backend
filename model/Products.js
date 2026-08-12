@@ -45,6 +45,41 @@ const productsSchema = mongoose.Schema({
     type: [String],
     default: [],
   },
+  /**
+   * Per-size stock. Example:
+   * sizes: ["S","M"]
+   * sizeInventory: [{ size: "S", quantity: 1 }, { size: "M", quantity: 1 }]
+   * quantity (below) = sum of sizeInventory quantities when this array is set.
+   * Legacy products may omit this; do not auto-split their quantity across sizes.
+   */
+  sizeInventory: {
+    type: [
+      {
+        size: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        quantity: {
+          type: Number,
+          required: true,
+          min: [0, "Size quantity can't be negative"],
+          default: 0,
+        },
+      },
+    ],
+    default: [],
+    validate: {
+      validator(list) {
+        if (!Array.isArray(list) || list.length === 0) return true;
+        const keys = list
+          .map((row) => String(row?.size || "").trim().toUpperCase())
+          .filter(Boolean);
+        return keys.length === new Set(keys).size;
+      },
+      message: "Duplicate sizes are not allowed in sizeInventory",
+    },
+  },
   sizeGuide: {
     type: ObjectId,
     ref: "SizeGuide",
@@ -167,6 +202,41 @@ const productsSchema = mongoose.Schema({
   timestamps: true,
 })
 
+productsSchema.pre("validate", function (next) {
+  if (!Array.isArray(this.sizeInventory)) {
+    this.sizeInventory = [];
+  }
+
+  this.sizeInventory = this.sizeInventory
+    .filter((row) => row && String(row.size || "").trim())
+    .map((row) => ({
+      size: String(row.size).trim(),
+      quantity: Math.max(0, Number(row.quantity) || 0),
+    }));
+
+  const seen = new Set();
+  for (const row of this.sizeInventory) {
+    const key = row.size.toUpperCase();
+    if (seen.has(key)) {
+      return next(new Error("Duplicate sizes are not allowed in sizeInventory"));
+    }
+    seen.add(key);
+  }
+
+  // Only sync total when size-wise stock is present. Leave legacy quantity untouched.
+  if (this.sizeInventory.length > 0) {
+    this.quantity = this.sizeInventory.reduce(
+      (sum, row) => sum + (Number(row.quantity) || 0),
+      0
+    );
+  }
+
+  if (this.status !== "discontinued") {
+    this.status = Number(this.quantity) > 0 ? "in-stock" : "out-of-stock";
+  }
+
+  next();
+});
 
 const Products = mongoose.model('Products', productsSchema)
 

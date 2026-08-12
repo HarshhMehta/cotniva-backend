@@ -8,6 +8,7 @@ const {
   createRazorpayOrder,
   createMagicCheckoutOrder,
   verifyRazorpayPayment,
+  releaseMagicCheckoutStock,
   magicShippingInfo,
   magicGetPromotions,
   magicApplyPromotion,
@@ -30,6 +31,7 @@ router.get("/orders", getOrders);
 router.post("/create-razorpay-order", createRazorpayOrder);
 router.post("/create-magic-checkout", createMagicCheckoutOrder);
 router.post("/verify-razorpay", verifyRazorpayPayment);
+router.post("/release-stock", releaseMagicCheckoutStock);
 
 // legacy Stripe (disabled)
 router.post("/create-payment-intent", paymentIntent);
