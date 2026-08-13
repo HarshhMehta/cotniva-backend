@@ -4,6 +4,7 @@ const whatsappAuth = require("../controller/whatsappAuth.controller");
 
 // Admin WhatsApp session
 router.get("/status", whatsappAuth.getWhatsAppStatus);
+router.post("/connect", whatsappAuth.connectWhatsAppSession);
 router.post("/logout", whatsappAuth.logoutWhatsAppSession);
 
 // Customer OTP login

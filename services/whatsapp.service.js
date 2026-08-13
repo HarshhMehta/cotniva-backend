@@ -8,11 +8,19 @@ const AUTH_DIR = path.join(__dirname, "..", "whatsapp-auth");
 
 let sock = null;
 let latestQr = null;
-let connectionStatus = "disconnected"; // disconnected | qr | connecting | connected
+let connectionStatus = "disconnected"; // disconnected | qr | connecting | connected | replaced
 let connectedNumber = null;
 let startPromise = null;
 let clearAuthFn = null;
 let retries = 0;
+let reconnectTimer = null;
+let connectedAt = 0;
+let intentionalStop = false;
+/** Another WhatsApp client (Render / Web / second npm start) owns this session */
+let sessionTakenElsewhere = false;
+
+const isAutoStartEnabled = () =>
+  String(process.env.WHATSAPP_AUTO_START || "true").toLowerCase() !== "false";
 
 const ensureAuthDir = () => {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -22,8 +30,53 @@ const ensureAuthDir = () => {
 
 const getBaileys = () => require("@whiskeysockets/baileys");
 
-const startWhatsApp = async () => {
-  if (sock && (connectionStatus === "connected" || connectionStatus === "qr")) {
+const clearReconnectTimer = () => {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+};
+
+const endSocketQuietly = (socket) => {
+  if (!socket) return;
+  try {
+    socket.ev?.removeAllListeners?.();
+  } catch (_) {}
+  try {
+    socket.end?.(undefined);
+  } catch (_) {}
+  try {
+    socket.ws?.close?.();
+  } catch (_) {}
+};
+
+const scheduleReconnect = (fn, delayMs) => {
+  clearReconnectTimer();
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    fn();
+  }, delayMs);
+};
+
+const startWhatsApp = async (opts = {}) => {
+  const force = Boolean(opts.force);
+  if (force) {
+    sessionTakenElsewhere = false;
+    intentionalStop = false;
+  }
+  if (intentionalStop && !force) return null;
+  if (sessionTakenElsewhere && !force) {
+    connectionStatus = "replaced";
+    return null;
+  }
+
+  // Never open a second socket while one is alive / connecting
+  if (
+    sock &&
+    (connectionStatus === "connected" ||
+      connectionStatus === "qr" ||
+      connectionStatus === "connecting")
+  ) {
     return sock;
   }
   if (startPromise) return startPromise;
@@ -36,9 +89,13 @@ const startWhatsApp = async () => {
       fetchLatestBaileysVersion,
     } = getBaileys();
 
-    // Same as KwikTeach: useMultiFileAuthState under the hood + Mongo mirror
-    const { state, saveCreds, clearAuth } =
-      await useHybridAuthState(AUTH_DIR);
+    // Tear down any leftover socket before opening a new one
+    if (sock) {
+      endSocketQuietly(sock);
+      sock = null;
+    }
+
+    const { state, saveCreds, clearAuth } = await useHybridAuthState(AUTH_DIR);
     clearAuthFn = clearAuth;
 
     const { version } = await fetchLatestBaileysVersion();
@@ -54,10 +111,12 @@ const startWhatsApp = async () => {
       printQRInTerminal: false,
       browser: ["Cotniva", "Chrome", "120.0"],
       connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
+      keepAliveIntervalMs: 25000,
       syncFullHistory: false,
       markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
       shouldSyncHistoryMessage: () => false,
+      getMessage: async () => undefined,
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -67,6 +126,7 @@ const startWhatsApp = async () => {
 
       if (qr) {
         connectionStatus = "qr";
+        sessionTakenElsewhere = false;
         try {
           latestQr = await qrcode.toDataURL(qr, { width: 300, margin: 1 });
         } catch (err) {
@@ -77,21 +137,58 @@ const startWhatsApp = async () => {
 
       if (connection === "open") {
         connectionStatus = "connected";
+        sessionTakenElsewhere = false;
         latestQr = null;
         connectedNumber =
           sock?.user?.id?.split(":")?.[0] || sock?.user?.id || null;
+        connectedAt = Date.now();
         retries = 0;
+        clearReconnectTimer();
         console.log("WhatsApp connected:", connectedNumber);
       }
 
       if (connection === "close") {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
+        const restartRequired =
+          statusCode === DisconnectReason.restartRequired || statusCode === 515;
+        const replaced =
+          statusCode === DisconnectReason.connectionReplaced ||
+          statusCode === 440;
+
+        const wasConnectedLongEnough =
+          connectedAt > 0 && Date.now() - connectedAt > 20000;
+
         connectionStatus = "disconnected";
         connectedNumber = null;
         latestQr = null;
+        const closingSock = sock;
         sock = null;
         startPromise = null;
+        connectedAt = 0;
+
+        endSocketQuietly(closingSock);
+
+        if (intentionalStop) {
+          console.log("WhatsApp closed (intentional stop)");
+          return;
+        }
+
+        // 440 = another client took this session (Render + local, or WhatsApp Web).
+        // Reconnecting fights the other client forever — stop until admin force-starts.
+        if (replaced) {
+          sessionTakenElsewhere = true;
+          connectionStatus = "replaced";
+          clearReconnectTimer();
+          retries = 0;
+          console.warn(
+            "WhatsApp session taken by another client (code 440). " +
+              "Auto-reconnect stopped. Keep WhatsApp on ONE server only " +
+              "(set WHATSAPP_AUTO_START=false on local). " +
+              "Admin can force reconnect from WhatsApp settings."
+          );
+          return;
+        }
 
         if (loggedOut) {
           console.log("WhatsApp logged out — clearing persisted auth");
@@ -101,23 +198,36 @@ const startWhatsApp = async () => {
             );
           }
           retries = 0;
-          setTimeout(() => {
-            startWhatsApp().catch((e) =>
+          scheduleReconnect(() => {
+            startWhatsApp({ force: true }).catch((e) =>
               console.error("WhatsApp restart failed:", e.message)
             );
-          }, 3000);
-        } else if (retries < 5) {
-          retries += 1;
-          const delay = Math.min(3000 * retries, 30000);
-          console.log(
-            `WhatsApp disconnected, reconnecting in ${delay}ms (attempt ${retries})...`
-          );
-          setTimeout(() => {
-            startWhatsApp().catch((e) =>
-              console.error("WhatsApp reconnect failed:", e.message)
-            );
-          }, delay);
+          }, 4000);
+          return;
         }
+
+        if (wasConnectedLongEnough) {
+          retries = 0;
+        }
+
+        if (retries >= 8) {
+          console.error(
+            "WhatsApp reconnect gave up after 8 attempts. Scan QR in admin if needed."
+          );
+          return;
+        }
+
+        retries += 1;
+        const base = restartRequired ? 1500 : 3000;
+        const delay = Math.min(base * retries, 60000);
+        console.log(
+          `WhatsApp disconnected (code ${statusCode || "unknown"}), reconnecting in ${delay}ms (attempt ${retries})...`
+        );
+        scheduleReconnect(() => {
+          startWhatsApp().catch((e) =>
+            console.error("WhatsApp reconnect failed:", e.message)
+          );
+        }, delay);
       }
     });
 
@@ -128,6 +238,7 @@ const startWhatsApp = async () => {
     return await startPromise;
   } catch (err) {
     startPromise = null;
+    connectionStatus = "disconnected";
     throw err;
   }
 };
@@ -136,6 +247,8 @@ const getStatus = () => ({
   status: connectionStatus,
   qr: latestQr,
   number: connectedNumber,
+  sessionTakenElsewhere,
+  autoStart: isAutoStartEnabled(),
 });
 
 const normalizePhone = (phone) => {
@@ -224,15 +337,14 @@ const sendWhatsAppText = async (phone, message) => {
 };
 
 const logoutWhatsApp = async () => {
+  intentionalStop = true;
+  clearReconnectTimer();
   try {
     if (sock) {
       try {
         await sock.logout();
       } catch (_) {}
-      try {
-        sock.ev.removeAllListeners();
-        sock.end?.();
-      } catch (_) {}
+      endSocketQuietly(sock);
     }
   } catch (err) {
     console.error("WhatsApp logout error:", err.message);
@@ -244,6 +356,7 @@ const logoutWhatsApp = async () => {
   connectedNumber = null;
   startPromise = null;
   retries = 0;
+  connectedAt = 0;
 
   try {
     if (typeof clearAuthFn === "function") {
@@ -253,11 +366,13 @@ const logoutWhatsApp = async () => {
     console.error("Clear WhatsApp auth error:", err.message);
   }
 
-  setTimeout(() => {
-    startWhatsApp().catch((e) =>
+  intentionalStop = false;
+  sessionTakenElsewhere = false;
+  scheduleReconnect(() => {
+    startWhatsApp({ force: true }).catch((e) =>
       console.error("WhatsApp restart after logout failed:", e.message)
     );
-  }, 1500);
+  }, 2000);
 };
 
 module.exports = {
@@ -267,5 +382,6 @@ module.exports = {
   waitForWhatsAppConnected,
   logoutWhatsApp,
   normalizePhone,
+  isAutoStartEnabled,
   AUTH_DIR,
 };

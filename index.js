@@ -30,7 +30,7 @@ const homeRoutes = require("./routes/home.routes");
 const sizeGuideRoutes = require("./routes/sizeGuide.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const customerRoutes = require("./routes/customer.routes");
-const { startWhatsApp } = require("./services/whatsapp.service");
+const { startWhatsApp, isAutoStartEnabled } = require("./services/whatsapp.service");
 const { razorpayWebhook } = require("./controller/order.controller");
 const { startHoldExpiryJob } = require("./services/inventory.service");
 
@@ -110,10 +110,16 @@ connectDB()
     app.listen(PORT, () => {
       console.log(`server running on port ${PORT}`);
       startHoldExpiryJob();
-      // After Mongo is ready — restore Baileys session from DB
-      startWhatsApp().catch((err) =>
-        console.log("WhatsApp auto-start:", err.message)
-      );
+      // After Mongo is ready — restore Baileys session from DB (one environment only)
+      if (isAutoStartEnabled()) {
+        startWhatsApp().catch((err) =>
+          console.log("WhatsApp auto-start:", err.message)
+        );
+      } else {
+        console.log(
+          "WhatsApp auto-start disabled (WHATSAPP_AUTO_START=false). Use admin to connect if needed."
+        );
+      }
     });
   })
   .catch((err) => {

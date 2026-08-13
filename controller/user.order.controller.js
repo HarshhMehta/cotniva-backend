@@ -227,30 +227,105 @@ exports.getSalesReport = async (req, res,next) => {
   }
 };
 
-// Most Selling Category
-exports.mostSellingCategory = async (req, res,next) => {
+// Most Selling Category — prefer real category name over legacy productType (beauty/electronics)
+exports.mostSellingCategory = async (req, res, next) => {
   try {
     const categoryData = await Order.aggregate([
+      { $unwind: "$cart" },
       {
-        $unwind: "$cart", // Deconstruct the cart array
-      },
-      {
-        $group: {
-          _id: "$cart.productType",
-          count: { $sum: "$cart.orderQuantity" },
+        $addFields: {
+          categoryLabel: {
+            $let: {
+              vars: {
+                catName: "$cart.category.name",
+                catParent: "$cart.category.parent",
+                catRaw: "$cart.category",
+                productType: "$cart.productType",
+              },
+              in: {
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ["$$catName", null] },
+                      { $ne: ["$$catName", ""] },
+                    ],
+                  },
+                  "$$catName",
+                  {
+                    $cond: [
+                      {
+                        $and: [
+                          { $ne: ["$$catParent", null] },
+                          { $ne: ["$$catParent", ""] },
+                        ],
+                      },
+                      "$$catParent",
+                      {
+                        $cond: [
+                          { $eq: [{ $type: "$$catRaw" }, "string"] },
+                          "$$catRaw",
+                          {
+                            $cond: [
+                              {
+                                $and: [
+                                  { $ne: ["$$productType", null] },
+                                  { $ne: ["$$productType", ""] },
+                                  {
+                                    $not: {
+                                      $in: [
+                                        {
+                                          $toLower: {
+                                            $toString: "$$productType",
+                                          },
+                                        },
+                                        [
+                                          "beauty",
+                                          "electronics",
+                                          "fashion",
+                                          "jewelry",
+                                        ],
+                                      ],
+                                    },
+                                  },
+                                ],
+                              },
+                              "$$productType",
+                              "$$REMOVE",
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
         },
       },
       {
-        $sort: { count: -1 },
+        $match: {
+          categoryLabel: {
+            $exists: true,
+            $nin: [null, "", "null", "undefined"],
+          },
+        },
       },
       {
-        $limit: 5,
+        $group: {
+          _id: "$categoryLabel",
+          count: {
+            $sum: { $ifNull: ["$cart.orderQuantity", 1] },
+          },
+        },
       },
+      { $sort: { count: -1 } },
+      { $limit: 8 },
     ]);
 
     res.status(200).json({ categoryData });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
 

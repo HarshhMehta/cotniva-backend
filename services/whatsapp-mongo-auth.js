@@ -5,7 +5,7 @@ const WhatsAppAuth = require("../model/WhatsAppAuth");
 
 const DOC_ID = "session_bundle";
 
-/** Only these files are needed to reconnect after a Render restart. */
+/** Files needed to reconnect after a restart. */
 const isEssentialAuthFile = (file) => {
   if (file === "creds.json") return true;
   if (file.startsWith("app-state-sync-version-")) return true;
@@ -13,14 +13,24 @@ const isEssentialAuthFile = (file) => {
   if (file.startsWith("sender-key-")) return true;
   if (file.startsWith("identity-")) return true;
   if (file === "device-identity.json") return true;
+  // Keep a slice of LIDs / pre-keys so reconnect stays stable
+  if (file.startsWith("lid-")) return true;
+  if (file.startsWith("pre-key-")) return true;
+  if (file.startsWith("app-state-sync-key-")) return true;
   return false;
 };
 
 const isPrunableAuthFile = (file) =>
-  file.startsWith("lid-") ||
-  file.startsWith("app-state-sync-key-") ||
-  file.startsWith("pre-key-") ||
   file.startsWith("tctoken-");
+
+const writeAuthDirFiles = (authDir, files) => {
+  ensureDir(authDir);
+  for (const [file, data] of Object.entries(files || {})) {
+    if (!file.endsWith(".json") || data == null) continue;
+    if (isPrunableAuthFile(file)) continue;
+    fs.writeFileSync(path.join(authDir, file), JSON.stringify(data), "utf8");
+  }
+};
 
 const waitForMongo = async (timeoutMs = 45000) => {
   if (mongoose.connection.readyState === 1) return;
@@ -71,10 +81,10 @@ const keepNewest = (authDir, files, keep) => {
 };
 
 /**
- * LID + rotating app-state keys explode into thousands of files and
- * huge Mongo writes. Keep a small working set on disk.
+ * Trim bulky rotating keys. Never wipe all LID / identity material —
+ * aggressive deletes cause Baileys connect→disconnect loops.
  */
-const pruneAuthDir = (authDir) => {
+const pruneAuthDir = (authDir, { aggressive = false } = {}) => {
   if (!fs.existsSync(authDir)) return { removed: 0 };
   const names = fs.readdirSync(authDir).filter((f) => f.endsWith(".json"));
   let removed = 0;
@@ -84,15 +94,11 @@ const pruneAuthDir = (authDir) => {
   const preKeys = names.filter((f) => f.startsWith("pre-key-"));
   const tcTokens = names.filter((f) => f.startsWith("tctoken-"));
 
-  for (const file of lids) {
-    try {
-      fs.unlinkSync(path.join(authDir, file));
-      removed += 1;
-    } catch (_) {}
-  }
-  removed += keepNewest(authDir, appKeys, 8);
-  removed += keepNewest(authDir, preKeys, 20);
-  removed += keepNewest(authDir, tcTokens, 2);
+  // Keep a working set of LIDs — deleting all of them breaks modern Baileys
+  removed += keepNewest(authDir, lids, aggressive ? 40 : 120);
+  removed += keepNewest(authDir, appKeys, aggressive ? 12 : 24);
+  removed += keepNewest(authDir, preKeys, aggressive ? 30 : 60);
+  removed += keepNewest(authDir, tcTokens, 4);
 
   if (removed > 0) {
     console.log(`WhatsApp auth pruned ${removed} cache files`);
@@ -103,30 +109,53 @@ const pruneAuthDir = (authDir) => {
 const readEssentialAuthFiles = (authDir) => {
   if (!fs.existsSync(authDir)) return {};
   const out = {};
+  const lids = [];
+  const preKeys = [];
+  const appKeys = [];
+
   for (const file of fs.readdirSync(authDir)) {
     if (!file.endsWith(".json") || !isEssentialAuthFile(file)) continue;
     try {
-      out[file] = JSON.parse(
+      const data = JSON.parse(
         fs.readFileSync(path.join(authDir, file), "utf8")
       );
+      if (file.startsWith("lid-")) lids.push({ file, data });
+      else if (file.startsWith("pre-key-")) preKeys.push({ file, data });
+      else if (file.startsWith("app-state-sync-key-"))
+        appKeys.push({ file, data });
+      else out[file] = data;
     } catch (_) {}
   }
-  return out;
-};
 
-const writeAuthDirFiles = (authDir, files) => {
-  ensureDir(authDir);
-  for (const [file, data] of Object.entries(files || {})) {
-    if (!file.endsWith(".json") || data == null) continue;
-    if (isPrunableAuthFile(file)) continue;
-    fs.writeFileSync(path.join(authDir, file), JSON.stringify(data), "utf8");
-  }
+  const byMtime = (a, b) => {
+    try {
+      return (
+        fs.statSync(path.join(authDir, b.file)).mtimeMs -
+        fs.statSync(path.join(authDir, a.file)).mtimeMs
+      );
+    } catch {
+      return 0;
+    }
+  };
+
+  lids.sort(byMtime).slice(0, 80).forEach((row) => {
+    out[row.file] = row.data;
+  });
+  preKeys.sort(byMtime).slice(0, 40).forEach((row) => {
+    out[row.file] = row.data;
+  });
+  appKeys.sort(byMtime).slice(0, 16).forEach((row) => {
+    out[row.file] = row.data;
+  });
+
+  return out;
 };
 
 const useHybridAuthState = async (authDir) => {
   await waitForMongo();
   ensureDir(authDir);
-  pruneAuthDir(authDir);
+  // One light prune on boot only — never mid-session
+  pruneAuthDir(authDir, { aggressive: false });
 
   const { useMultiFileAuthState } = require("@whiskeysockets/baileys");
 
@@ -148,9 +177,9 @@ const useHybridAuthState = async (authDir) => {
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-  const syncDiskToMongo = async () => {
+  const syncDiskToMongo = async ({ prune = false } = {}) => {
     try {
-      pruneAuthDir(authDir);
+      if (prune) pruneAuthDir(authDir, { aggressive: false });
       const files = readEssentialAuthFiles(authDir);
       await WhatsAppAuth.findOneAndUpdate(
         { _id: DOC_ID },
@@ -189,12 +218,14 @@ const useHybridAuthState = async (authDir) => {
   const saveCredsAndSync = async () => {
     await saveCreds();
     if (syncTimer) clearTimeout(syncTimer);
+    // Debounced Mongo backup — do NOT prune keys while session is live
     syncTimer = setTimeout(() => {
-      syncDiskToMongo().catch(() => {});
-    }, 8000);
+      syncDiskToMongo({ prune: false }).catch(() => {});
+    }, 12000);
   };
 
-  await syncDiskToMongo();
+  // Initial backup without pruning again
+  await syncDiskToMongo({ prune: false });
 
   const clearAuth = async () => {
     try {

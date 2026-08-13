@@ -274,29 +274,45 @@ exports.changePassword = async (req, res,next) => {
 };
 
 // update a profile
-exports.updateUser = async (req, res,next) => {
+exports.updateUser = async (req, res, next) => {
   try {
-    const userId = req.params.id
+    const userId = req.params.id;
     const user = await User.findById(userId);
-    if (user) {
-      user.name = req.body.name;
-      user.email = req.body.email;
-      user.phone = req.body.phone;
-      user.address = req.body.address;
-      user.bio = req.body.bio; 
-      const updatedUser = await user.save();
-      const token = generateToken(updatedUser);
-      res.status(200).json({
-        status: "success",
-        message: "Successfully updated profile",
-        data: {
-          user: updatedUser,
-          token,
-        },
+    if (!user) {
+      return res.status(404).json({
+        status: "fail",
+        message: "User not found",
       });
     }
+
+    if (req.body.name !== undefined && String(req.body.name).trim()) {
+      user.name = String(req.body.name).trim();
+    }
+    if (req.body.email !== undefined && String(req.body.email).trim()) {
+      user.email = String(req.body.email).trim().toLowerCase();
+    }
+    if (req.body.phone !== undefined && String(req.body.phone).trim()) {
+      user.phone = String(req.body.phone).trim();
+    }
+    if (req.body.address !== undefined) {
+      user.address = req.body.address;
+    }
+    if (req.body.bio !== undefined) {
+      user.bio = req.body.bio;
+    }
+
+    const updatedUser = await user.save();
+    const token = generateToken(updatedUser);
+    res.status(200).json({
+      status: "success",
+      message: "Successfully updated profile",
+      data: {
+        user: updatedUser,
+        token,
+      },
+    });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
 

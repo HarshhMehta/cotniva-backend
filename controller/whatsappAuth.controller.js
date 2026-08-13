@@ -19,9 +19,19 @@ const phoneEmail = (phone) => `${phone}@gmail.com`;
 // Admin: start session / get QR + status
 exports.getWhatsAppStatus = async (req, res, next) => {
   try {
-    await startWhatsApp();
-    // small delay so QR can populate on first connect
-    await new Promise((r) => setTimeout(r, 400));
+    // Read-only — never start a socket here (admin polls this every few seconds)
+    const status = getStatus();
+    res.status(200).json({ success: true, data: status });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** Explicit connect / reclaim — used by admin "Connect" / "Refresh QR" only */
+exports.connectWhatsAppSession = async (req, res, next) => {
+  try {
+    await startWhatsApp({ force: true });
+    await new Promise((r) => setTimeout(r, 600));
     const status = getStatus();
     res.status(200).json({ success: true, data: status });
   } catch (error) {
