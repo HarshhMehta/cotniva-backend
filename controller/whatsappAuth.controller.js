@@ -54,7 +54,7 @@ exports.sendLoginOtp = async (req, res, next) => {
       });
     }
 
-    const connected = await waitForWhatsAppConnected(15000);
+    const connected = await waitForWhatsAppConnected(4000);
     if (!connected) {
       const currentStatus = getStatus().status;
       return res.status(503).json({
