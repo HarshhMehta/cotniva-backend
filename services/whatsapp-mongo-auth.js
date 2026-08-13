@@ -5,6 +5,23 @@ const WhatsAppAuth = require("../model/WhatsAppAuth");
 
 const DOC_ID = "session_bundle";
 
+/** Only these files are needed to reconnect after a Render restart. */
+const isEssentialAuthFile = (file) => {
+  if (file === "creds.json") return true;
+  if (file.startsWith("app-state-sync-version-")) return true;
+  if (file.startsWith("session-")) return true;
+  if (file.startsWith("sender-key-")) return true;
+  if (file.startsWith("identity-")) return true;
+  if (file === "device-identity.json") return true;
+  return false;
+};
+
+const isPrunableAuthFile = (file) =>
+  file.startsWith("lid-") ||
+  file.startsWith("app-state-sync-key-") ||
+  file.startsWith("pre-key-") ||
+  file.startsWith("tctoken-");
+
 const waitForMongo = async (timeoutMs = 45000) => {
   if (mongoose.connection.readyState === 1) return;
   if (mongoose.connection.readyState === 2) {
@@ -31,14 +48,63 @@ const ensureDir = (dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
 
+const keepNewest = (authDir, files, keep) => {
+  if (files.length <= keep) return 0;
+  const ranked = files
+    .map((file) => {
+      try {
+        const st = fs.statSync(path.join(authDir, file));
+        return { file, mtime: st.mtimeMs };
+      } catch {
+        return { file, mtime: 0 };
+      }
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+  let removed = 0;
+  for (const row of ranked.slice(keep)) {
+    try {
+      fs.unlinkSync(path.join(authDir, row.file));
+      removed += 1;
+    } catch (_) {}
+  }
+  return removed;
+};
+
 /**
- * Read all *.json files in auth dir → { filename: parsedObject }
+ * LID + rotating app-state keys explode into thousands of files and
+ * huge Mongo writes. Keep a small working set on disk.
  */
-const readAuthDirFiles = (authDir) => {
+const pruneAuthDir = (authDir) => {
+  if (!fs.existsSync(authDir)) return { removed: 0 };
+  const names = fs.readdirSync(authDir).filter((f) => f.endsWith(".json"));
+  let removed = 0;
+
+  const lids = names.filter((f) => f.startsWith("lid-"));
+  const appKeys = names.filter((f) => f.startsWith("app-state-sync-key-"));
+  const preKeys = names.filter((f) => f.startsWith("pre-key-"));
+  const tcTokens = names.filter((f) => f.startsWith("tctoken-"));
+
+  for (const file of lids) {
+    try {
+      fs.unlinkSync(path.join(authDir, file));
+      removed += 1;
+    } catch (_) {}
+  }
+  removed += keepNewest(authDir, appKeys, 8);
+  removed += keepNewest(authDir, preKeys, 20);
+  removed += keepNewest(authDir, tcTokens, 2);
+
+  if (removed > 0) {
+    console.log(`WhatsApp auth pruned ${removed} cache files`);
+  }
+  return { removed };
+};
+
+const readEssentialAuthFiles = (authDir) => {
   if (!fs.existsSync(authDir)) return {};
   const out = {};
   for (const file of fs.readdirSync(authDir)) {
-    if (!file.endsWith(".json")) continue;
+    if (!file.endsWith(".json") || !isEssentialAuthFile(file)) continue;
     try {
       out[file] = JSON.parse(
         fs.readFileSync(path.join(authDir, file), "utf8")
@@ -48,38 +114,26 @@ const readAuthDirFiles = (authDir) => {
   return out;
 };
 
-/**
- * Write file map back to auth dir (for restore on boot).
- */
 const writeAuthDirFiles = (authDir, files) => {
   ensureDir(authDir);
   for (const [file, data] of Object.entries(files || {})) {
     if (!file.endsWith(".json") || data == null) continue;
-    fs.writeFileSync(
-      path.join(authDir, file),
-      JSON.stringify(data, null, 2),
-      "utf8"
-    );
+    if (isPrunableAuthFile(file)) continue;
+    fs.writeFileSync(path.join(authDir, file), JSON.stringify(data), "utf8");
   }
 };
 
-/**
- * KwikTeach-compatible auth:
- * - Baileys uses normal useMultiFileAuthState (same send path that works for unknown numbers)
- * - We mirror the whole session folder into Mongo so Render restarts keep the QR session
- */
 const useHybridAuthState = async (authDir) => {
   await waitForMongo();
   ensureDir(authDir);
+  pruneAuthDir(authDir);
 
   const { useMultiFileAuthState } = require("@whiskeysockets/baileys");
 
-  // Restore from Mongo → disk before Baileys opens the folder
   try {
     const doc = await WhatsAppAuth.findById(DOC_ID).lean();
     const files = doc?.data?.files;
     if (files && typeof files === "object" && Object.keys(files).length > 0) {
-      // Only restore if disk is empty / missing creds
       const diskCreds = path.join(authDir, "creds.json");
       if (!fs.existsSync(diskCreds)) {
         writeAuthDirFiles(authDir, files);
@@ -96,7 +150,8 @@ const useHybridAuthState = async (authDir) => {
 
   const syncDiskToMongo = async () => {
     try {
-      const files = readAuthDirFiles(authDir);
+      pruneAuthDir(authDir);
+      const files = readEssentialAuthFiles(authDir);
       await WhatsAppAuth.findOneAndUpdate(
         { _id: DOC_ID },
         {
@@ -111,7 +166,6 @@ const useHybridAuthState = async (authDir) => {
     }
   };
 
-  // Migrate old per-key Mongo auth → disk once, if needed
   try {
     const diskCreds = path.join(authDir, "creds.json");
     if (!fs.existsSync(diskCreds)) {
@@ -124,19 +178,22 @@ const useHybridAuthState = async (authDir) => {
         );
         fs.writeFileSync(
           path.join(authDir, "creds.json"),
-          JSON.stringify(creds, BufferJSON.replacer, 2)
+          JSON.stringify(creds, BufferJSON.replacer)
         );
         console.log("WhatsApp legacy creds restored to disk");
       }
     }
   } catch (_) {}
 
+  let syncTimer = null;
   const saveCredsAndSync = async () => {
     await saveCreds();
-    await syncDiskToMongo();
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      syncDiskToMongo().catch(() => {});
+    }, 8000);
   };
 
-  // Initial sync so Mongo has a copy even before first creds.update
   await syncDiskToMongo();
 
   const clearAuth = async () => {
@@ -162,6 +219,6 @@ const useHybridAuthState = async (authDir) => {
 module.exports = {
   useHybridAuthState,
   waitForMongo,
-  // keep old name exported for safety
+  pruneAuthDir,
   useMongoAuthState: useHybridAuthState,
 };

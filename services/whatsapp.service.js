@@ -12,9 +12,7 @@ let connectionStatus = "disconnected"; // disconnected | qr | connecting | conne
 let connectedNumber = null;
 let startPromise = null;
 let clearAuthFn = null;
-let syncDiskToMongoFn = null;
 let retries = 0;
-let syncTimer = null;
 
 const ensureAuthDir = () => {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -39,10 +37,9 @@ const startWhatsApp = async () => {
     } = getBaileys();
 
     // Same as KwikTeach: useMultiFileAuthState under the hood + Mongo mirror
-    const { state, saveCreds, clearAuth, syncDiskToMongo } =
+    const { state, saveCreds, clearAuth } =
       await useHybridAuthState(AUTH_DIR);
     clearAuthFn = clearAuth;
-    syncDiskToMongoFn = syncDiskToMongo;
 
     const { version } = await fetchLatestBaileysVersion();
     console.log(`WhatsApp Baileys v${version.join(".")}`);
@@ -57,19 +54,13 @@ const startWhatsApp = async () => {
       printQRInTerminal: false,
       browser: ["Cotniva", "Chrome", "120.0"],
       connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000,
+      keepAliveIntervalMs: 30000,
       syncFullHistory: false,
+      markOnlineOnConnect: false,
+      shouldSyncHistoryMessage: () => false,
     });
 
     sock.ev.on("creds.update", saveCreds);
-
-    if (syncTimer) clearInterval(syncTimer);
-    // Persist session keys often (Render can kill the process anytime)
-    syncTimer = setInterval(() => {
-      if (typeof syncDiskToMongoFn === "function") {
-        syncDiskToMongoFn().catch(() => {});
-      }
-    }, 20000);
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -91,9 +82,6 @@ const startWhatsApp = async () => {
           sock?.user?.id?.split(":")?.[0] || sock?.user?.id || null;
         retries = 0;
         console.log("WhatsApp connected:", connectedNumber);
-        if (typeof syncDiskToMongoFn === "function") {
-          syncDiskToMongoFn().catch(() => {});
-        }
       }
 
       if (connection === "close") {
@@ -209,7 +197,6 @@ const sendWhatsAppText = async (phone, message) => {
   const digits = normalizePhone(phone);
   let jid = formatPhoneJid(digits);
 
-  // Confirm number is on WhatsApp (avoids silent fake success)
   try {
     const results = await sock.onWhatsApp(digits);
     const hit = Array.isArray(results)
@@ -228,22 +215,10 @@ const sendWhatsAppText = async (phone, message) => {
     console.warn("onWhatsApp check skipped:", err.message);
   }
 
-  try {
-    await sock.presenceSubscribe(jid);
-    await sock.sendPresenceUpdate("composing", jid);
-    await delay(400);
-  } catch (err) {
-    console.warn("presence warm-up skipped:", err.message);
-  }
-
   const sent = await sock.sendMessage(jid, { text: message });
   console.log(`WhatsApp message sent to ${jid}`, {
     id: sent?.key?.id || null,
   });
-
-  if (typeof syncDiskToMongoFn === "function") {
-    syncDiskToMongoFn().catch(() => {});
-  }
 
   return true;
 };
@@ -269,10 +244,6 @@ const logoutWhatsApp = async () => {
   connectedNumber = null;
   startPromise = null;
   retries = 0;
-  if (syncTimer) {
-    clearInterval(syncTimer);
-    syncTimer = null;
-  }
 
   try {
     if (typeof clearAuthFn === "function") {
