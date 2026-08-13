@@ -246,6 +246,7 @@ exports.updateProductService = async (id, currProduct) => {
     description: currProduct.description,
     productHighlights: currProduct.productHighlights || "",
     fabricCare: currProduct.fabricCare || "",
+    fitSizing: currProduct.fitSizing || "",
     additionalInformation: currProduct.additionalInformation,
     sizeGuide: currProduct.sizeGuide || null,
     slug: await ensureUniqueSlug(nextSlug, id),

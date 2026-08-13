@@ -167,6 +167,12 @@ const productsSchema = mongoose.Schema({
     required: false,
     default: "",
   },
+  /** Accordion: Fit & Sizing (multiline text) */
+  fitSizing: {
+    type: String,
+    required: false,
+    default: "",
+  },
   videoId: {
     type: String,
     required: false
