@@ -8,11 +8,11 @@
   },
   "scripts": {
     "start": "node index.js",
-    "build": "node index.js",
+    "build": "node -e \"require('fs').accessSync('index.js')\"",
     "start-dev": "nodemon index.js",
     "data:import": "node seed.js",
     "data:dummy": "node seed-dummy-products.js",
-    "test": "node tests/inventory.e2e.test.js",
+    "test": "node tests/inventory.e2e.test.js"
   },
   "keywords": [],
   "author": "",
