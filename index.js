@@ -92,6 +92,7 @@ app.use("/api/size-guide", sizeGuideRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/checkout-abandon", require("./routes/checkoutAbandon.routes"));
+app.use("/api/newsletter", require("./routes/newsletter.routes"));
 
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 

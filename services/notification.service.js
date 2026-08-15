@@ -1,6 +1,7 @@
 const EventEmitter = require("events");
 const Notification = require("../model/Notification");
 const { sendOrderFailedEmails } = require("./order-email.service");
+const { sendPaymentFailedWhatsApp } = require("./order-whatsapp.service");
 const NOTIFICATION_TYPES = Notification.NOTIFICATION_TYPES;
 
 const notificationBus = new EventEmitter();
@@ -76,6 +77,8 @@ const notifyPaymentFailed = async ({
   name,
   invoice,
   paymentMethod,
+  contact,
+  phone,
   meta = {},
 } = {}) => {
   const doc = await createNotification({
@@ -83,7 +86,7 @@ const notifyPaymentFailed = async ({
     message: reason || "A customer payment attempt failed",
     type: "payment_failed",
     relatedCustomerId: relatedCustomerId || undefined,
-    meta: { amount, email, name, invoice, ...meta },
+    meta: { amount, email, name, invoice, contact: contact || phone, ...meta },
   });
 
   sendOrderFailedEmails({
@@ -95,6 +98,18 @@ const notifyPaymentFailed = async ({
     paymentMethod,
     meta,
   }).catch((e) => console.error("order failed email:", e.message));
+
+  const waPhone =
+    contact || phone || meta?.contact || meta?.phone || meta?.mobile || "";
+  if (waPhone) {
+    sendPaymentFailedWhatsApp({
+      phone: waPhone,
+      name,
+      reason,
+      amount,
+      invoice,
+    }).catch((e) => console.error("order failed whatsapp:", e.message));
+  }
 
   return doc;
 };

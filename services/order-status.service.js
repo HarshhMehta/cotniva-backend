@@ -15,6 +15,13 @@ const {
   claimEmailSlot,
 } = require("./order-email.service");
 const {
+  sendOrderConfirmedWhatsApp,
+  sendOrderShippedWhatsApp,
+  sendOrderOutForDeliveryWhatsApp,
+  sendOrderDeliveredWhatsApp,
+  sendOrderCancelledWhatsApp,
+} = require("./order-whatsapp.service");
+const {
   notifyNewOrder,
   notifyOrderCancelled,
 } = require("./notification.service");
@@ -78,13 +85,18 @@ const appendHistory = (order, entry) => {
  */
 const sendLifecycleEmailOnce = async (orderId, key, sendFn, { alsoMark = [] } = {}) => {
   const claimed = await beginEmailSend(orderId, key);
-  if (!claimed) return { sent: false, skipped: true };
+  if (!claimed) {
+    console.log(`[order-email] ${key} skipped (already sent or locked) order=${orderId}`);
+    return { sent: false, skipped: true };
+  }
   try {
+    console.log(`[order-email] ${key} sending… order=${orderId}`);
     await sendFn();
     await completeEmailSend(orderId, key);
     for (const extra of alsoMark) {
       await claimEmailSlot(orderId, extra);
     }
+    console.log(`[order-email] ${key} sent OK order=${orderId}`);
     return { sent: true };
   } catch (err) {
     console.error(`lifecycle email ${key}:`, err.message);
@@ -93,19 +105,77 @@ const sendLifecycleEmailOnce = async (orderId, key, sendFn, { alsoMark = [] } = 
   }
 };
 
+/** Clear send locks so a failed/hung send can be retried */
+const clearNotificationLocks = async (orderId, keys = []) => {
+  if (!orderId || !keys.length) return;
+  const unset = {};
+  for (const key of keys) {
+    unset[`emailsSending.${key}`] = 1;
+    unset[`whatsappSending.${key}`] = 1;
+  }
+  await Order.updateOne({ _id: orderId }, { $unset: unset });
+};
+
 /**
  * After first successful Order.create for a paid Razorpay payment.
+ * Email + WhatsApp run in parallel so a slow SMTP cannot block WhatsApp.
  */
 const onOrderConfirmedCreated = async (order) => {
-  if (!order) return;
-  await sendLifecycleEmailOnce(
-    order._id,
-    "confirmed",
-    async () => {
-      await sendOrderConfirmedEmails(order);
-    },
-    { alsoMark: ["admin_new_order"] }
+  if (!order) return { email: null, whatsapp: null };
+  console.log(
+    `[order-notify] confirmed start order=${order._id} email=${order.email} contact=${order.contact}`
   );
+
+  const [emailResult, whatsappResult] = await Promise.all([
+    sendLifecycleEmailOnce(
+      order._id,
+      "confirmed",
+      async () => {
+        await sendOrderConfirmedEmails(order);
+      },
+      { alsoMark: ["admin_new_order"] }
+    ),
+    sendOrderConfirmedWhatsApp(order),
+  ]);
+
+  console.log(
+    `[order-notify] confirmed done order=${order._id}`,
+    JSON.stringify({ email: emailResult, whatsapp: whatsappResult })
+  );
+  return { email: emailResult, whatsapp: whatsappResult };
+};
+
+/**
+ * Force re-send confirmed customer+admin email and WhatsApp (admin / recovery).
+ */
+const resendOrderConfirmedNotifications = async (orderId, { force = true } = {}) => {
+  const order = await Order.findById(orderId);
+  if (!order) {
+    const err = new Error("Order not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (force) {
+    await Order.updateOne(
+      { _id: order._id },
+      {
+        $unset: {
+          "emailsSent.confirmed": 1,
+          "emailsSent.admin_new_order": 1,
+          "emailsSending.confirmed": 1,
+          "emailsSending.admin_new_order": 1,
+          "whatsappSent.confirmed": 1,
+          "whatsappSending.confirmed": 1,
+        },
+      }
+    );
+  } else {
+    await clearNotificationLocks(order._id, ["confirmed", "admin_new_order"]);
+  }
+
+  const fresh = await Order.findById(order._id);
+  return onOrderConfirmedCreated(fresh);
 };
 
 /**
@@ -178,14 +248,17 @@ const applyFulfillmentStatus = async ({
     await sendLifecycleEmailOnce(order._id, "shipped", () =>
       sendOrderShippedEmail(order)
     );
+    await sendOrderShippedWhatsApp(order);
   } else if (next === "out_for_delivery") {
     await sendLifecycleEmailOnce(order._id, "out_for_delivery", () =>
       sendOrderOutForDeliveryEmail(order)
     );
+    await sendOrderOutForDeliveryWhatsApp(order);
   } else if (next === "delivered") {
     await sendLifecycleEmailOnce(order._id, "delivered", () =>
       sendOrderDeliveredEmail(order)
     );
+    await sendOrderDeliveredWhatsApp(order);
   }
 
   return {
@@ -352,6 +425,11 @@ const emergencyCancelOrder = async ({
     { alsoMark: ["admin_cancelled"] }
   );
 
+  await sendOrderCancelledWhatsApp(fresh, {
+    reason,
+    refundStatus: refundResult.status,
+  });
+
   return {
     order: fresh,
     alreadyCancelled: false,
@@ -372,4 +450,6 @@ module.exports = {
   onOrderConfirmedCreated,
   applyFulfillmentStatus,
   emergencyCancelOrder,
+  resendOrderConfirmedNotifications,
+  clearNotificationLocks,
 };

@@ -264,7 +264,14 @@ const sendOrderConfirmedEmails = async (order) => {
         to: order.email,
         subject: `Order confirmed ${invoice} · ${BRAND}`,
         html: customerHtml,
+      }).catch((err) => {
+        console.error("[order-email] customer-confirm failed:", err.message);
+        throw err;
       })
+    );
+  } else {
+    console.warn(
+      `[order-email] customer-confirm skipped placeholder email=${order.email}`
     );
   }
   const adminTo = adminInbox();
@@ -274,10 +281,30 @@ const sendOrderConfirmedEmails = async (order) => {
         to: adminTo,
         subject: `New order ${invoice} · ${inr(order.totalAmount)} · ${BRAND}`,
         html: adminHtml,
+      }).catch((err) => {
+        console.error("[order-email] admin-new-order failed:", err.message);
+        throw err;
       })
     );
+  } else {
+    console.warn("[order-email] admin-new-order skipped (ADMIN_ORDER_EMAIL empty)");
   }
-  await Promise.all(jobs);
+  if (!jobs.length) {
+    console.warn("[order-email] confirmed: no recipients");
+    return;
+  }
+  // Send independently so one failure does not block the other
+  const results = await Promise.allSettled(jobs);
+  const failed = results.filter((r) => r.status === "rejected");
+  if (failed.length === results.length) {
+    throw failed[0].reason || new Error("All confirmation emails failed");
+  }
+  if (failed.length) {
+    console.error(
+      "[order-email] confirmed partial failure:",
+      failed.map((f) => f.reason?.message || f.reason).join("; ")
+    );
+  }
 };
 
 const sendOrderFailedEmails = async ({

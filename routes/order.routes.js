@@ -16,6 +16,7 @@ const {
   magicApplyPromotion,
   updateAdminNotes,
   syncRazorpayAddress,
+  resendOrderConfirmed,
 } = require("../controller/order.controller");
 const { requireAdmin } = require("../config/auth");
 
@@ -46,6 +47,7 @@ router.patch("/update-status/:id", requireAdmin, updateOrderStatus);
 router.post("/:id/emergency-cancel", requireAdmin, emergencyCancelOrder);
 router.patch("/update-notes/:id", requireAdmin, updateAdminNotes);
 router.post("/sync-razorpay-address/:id", requireAdmin, syncRazorpayAddress);
+router.post("/:id/resend-confirmed", requireAdmin, resendOrderConfirmed);
 
 // single order last
 router.get("/:id", getSingleOrder);

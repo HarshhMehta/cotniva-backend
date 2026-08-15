@@ -12,7 +12,7 @@
     "start-dev": "nodemon index.js",
     "data:import": "node seed.js",
     "data:dummy": "node seed-dummy-products.js",
-    "test": "node tests/inventory.e2e.test.js && node tests/refund-safety.test.js && node tests/review-safety.test.js"
+    "test": "node tests/inventory.e2e.test.js && node tests/refund-safety.test.js && node tests/review-safety.test.js && node tests/newsletter-safety.test.js"
   },
   "keywords": [],
   "author": "",

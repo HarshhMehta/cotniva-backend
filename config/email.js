@@ -4,6 +4,11 @@ const { secret } = require("./secret");
 
 let transporter;
 
+const SMTP_TIMEOUT_MS = Math.max(
+  8000,
+  Number(process.env.SMTP_TIMEOUT_MS) || 20000
+);
+
 const getTransporter = () => {
   if (transporter) return transporter;
 
@@ -13,7 +18,7 @@ const getTransporter = () => {
     secret.email_secure === "true" ||
     port === 465;
 
-  // Prefer host+port for Gmail app passwords; `service: gmail` also works
+  // Prefer host+port for Gmail app passwords; timeouts prevent order-flow hangs
   const config = {
     host: secret.email_host || "smtp.gmail.com",
     port,
@@ -22,6 +27,10 @@ const getTransporter = () => {
       user: secret.email_user,
       pass: String(secret.email_pass || "").replace(/\s+/g, ""),
     },
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
+    tls: { rejectUnauthorized: true },
   };
 
   if (!secure && port === 587) {
@@ -42,11 +51,19 @@ const sendMailAsync = async (mailOptions = {}) => {
     mailOptions.from ||
     `"Cotniva" <${secret.email_user}>`;
 
-  const info = await getTransporter().sendMail({
+  const sendPromise = getTransporter().sendMail({
     ...mailOptions,
     from,
   });
-  return info;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    const t = setTimeout(() => {
+      reject(new Error(`SMTP send timed out after ${SMTP_TIMEOUT_MS}ms`));
+    }, SMTP_TIMEOUT_MS);
+    if (typeof t.unref === "function") t.unref();
+  });
+
+  return Promise.race([sendPromise, timeoutPromise]);
 };
 
 /**
@@ -72,3 +89,4 @@ module.exports.sendEmail = (body, res, message) => {
 
 module.exports.sendMailAsync = sendMailAsync;
 module.exports.getTransporter = getTransporter;
+module.exports.SMTP_TIMEOUT_MS = SMTP_TIMEOUT_MS;

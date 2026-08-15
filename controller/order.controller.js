@@ -10,6 +10,7 @@ const {
   onOrderConfirmedCreated,
   applyFulfillmentStatus,
   emergencyCancelOrder,
+  resendOrderConfirmedNotifications,
   CANCEL_REASONS,
 } = require("../services/order-status.service");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
@@ -234,6 +235,7 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       receipt,
       notes,
       discount = 0,
+      shipping,
     } = req.body || {};
 
     if (!Array.isArray(cart) || cart.length === 0) {
@@ -317,9 +319,18 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
     }
 
     const releaseToken = newReleaseToken();
+    const ship = shipping && typeof shipping === "object" ? shipping : {};
     const orderDraft = {
       cart,
-      user: notes?.userId || null,
+      user: notes?.userId || ship.user || null,
+      name: ship.name || "",
+      address: ship.address || "",
+      city: ship.city || "",
+      zipCode: ship.zipCode || "",
+      country: ship.country || "India",
+      contact: ship.contact || "",
+      email: ship.email || "",
+      orderNote: ship.orderNote || "",
       subTotal: subTotalRupees,
       shippingCost: Number(shippingCost) || 0,
       discount: Number(discount) || 0,
@@ -367,6 +378,46 @@ const findExistingPaidOrder = async (razorpay_order_id, razorpay_payment_id) => 
     });
   }
   return null;
+};
+
+/**
+ * Always try confirmed email+WhatsApp (idempotent).
+ * Needed when Razorpay webhook creates the order first and client verify
+ * returns duplicate — otherwise local never sends notifications.
+ */
+const ensureConfirmedNotifications = (order, reason = "persist") => {
+  if (!order?._id) return;
+  Promise.resolve()
+    .then(async () => {
+      // Clear hung sending locks if mail was never marked sent
+      const markers = await Order.findById(order._id)
+        .select("emailsSent emailsSending whatsappSent whatsappSending")
+        .lean();
+      if (markers && !markers.emailsSent?.confirmed) {
+        await Order.updateOne(
+          { _id: order._id },
+          {
+            $unset: {
+              "emailsSending.confirmed": 1,
+              "emailsSending.admin_new_order": 1,
+            },
+          }
+        );
+      }
+      if (markers && !markers.whatsappSent?.confirmed) {
+        await Order.updateOne(
+          { _id: order._id },
+          { $unset: { "whatsappSending.confirmed": 1 } }
+        );
+      }
+      const full = await Order.findById(order._id);
+      if (!full) return null;
+      console.log(
+        `[order-notify] ensure confirmed (${reason}) order=${full._id} email=${full.email}`
+      );
+      return onOrderConfirmedCreated(full);
+    })
+    .catch((e) => console.error("confirm notify failed:", e.message));
 };
 
 const isDuplicateKey = (err) =>
@@ -439,6 +490,7 @@ const persistVerifiedOrder = async ({
   );
   if (already) {
     await commitHold(razorpay_order_id).catch(() => {});
+    ensureConfirmedNotifications(already, "duplicate-early");
     return { order: already, duplicate: true };
   }
 
@@ -446,7 +498,16 @@ const persistVerifiedOrder = async ({
   if (!lock.acquired) {
     if (lock.reason === "order_exists" && lock.order) {
       await commitHold(razorpay_order_id).catch(() => {});
+      ensureConfirmedNotifications(lock.order, "duplicate-lock-exists");
       return { order: lock.order, duplicate: true };
+    }
+    if (lock.reason === "already_refunded") {
+      const err = new Error(
+        "This payment was refunded before the order could be saved. Please try checkout again — you have not been charged."
+      );
+      err.statusCode = 409;
+      err.code = "ALREADY_REFUNDED";
+      throw err;
     }
     const raced = await findExistingPaidOrder(
       razorpay_order_id,
@@ -454,6 +515,7 @@ const persistVerifiedOrder = async ({
     );
     if (raced) {
       await commitHold(razorpay_order_id).catch(() => {});
+      ensureConfirmedNotifications(raced, "duplicate-race");
       return { order: raced, duplicate: true };
     }
     const err = new Error(
@@ -553,6 +615,7 @@ const persistVerifiedOrder = async ({
             existing._id,
             razorpay_order_id
           );
+          ensureConfirmedNotifications(existing, "duplicate-e11000");
           return { order: existing, duplicate: true };
         }
         // Duplicate key is unrelated to this payment (e.g. invoice race) —
@@ -586,14 +649,14 @@ const persistVerifiedOrder = async ({
       } else {
         await releaseHold(razorpay_order_id, { internal: true }).catch(() => {});
       }
-      // Release persist lock before safety refund so the refund claim can proceed
+      // Release lock so client verify can retry. Do NOT auto-refund here —
+      // webhook/client races were refunding successful payments incorrectly.
+      // Only OUT_OF_STOCK paths should call safeAutoRefundPayment.
       await releasePersistLock(razorpay_payment_id).catch(() => {});
-      await safeAutoRefundPayment({
-        razorpay_payment_id,
-        razorpay_order_id,
-        reason: "order_create_failed",
-        source: "persistVerifiedOrder",
-      });
+      console.error(
+        "[persistVerifiedOrder] order create failed (no auto-refund):",
+        createErr.message
+      );
       throw createErr;
     }
 
@@ -616,9 +679,7 @@ const persistVerifiedOrder = async ({
     notifyNewOrder(orderItems, "payment_success").catch((e) =>
       console.log("notify payment_success:", e.message)
     );
-    onOrderConfirmedCreated(orderItems).catch((e) =>
-      console.log("confirm emails:", e.message)
-    );
+    ensureConfirmedNotifications(orderItems, "created");
     if (orderItems.user) {
       trackCustomerActivity(orderItems.user, "order_placed", {
         orderId: orderItems._id,
@@ -655,6 +716,7 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
         amount: orderPayload?.totalAmount,
         email: orderPayload?.email,
         name: orderPayload?.name,
+        contact: orderPayload?.contact,
         paymentMethod: orderPayload?.paymentMethod || "Razorpay",
         meta: { razorpay_order_id },
       }).catch(() => {});
@@ -677,6 +739,7 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
         amount: orderPayload?.totalAmount,
         email: orderPayload?.email,
         name: orderPayload?.name,
+        contact: orderPayload?.contact,
         paymentMethod: orderPayload?.paymentMethod || "Razorpay",
         meta: { razorpay_order_id, razorpay_payment_id },
       }).catch(() => {});
@@ -703,7 +766,51 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
         order: result.order,
       });
     } catch (stockErr) {
-      if (stockErr.statusCode === 409 || stockErr.code === "OUT_OF_STOCK") {
+      // Webhook often wins the persist lock — wait for that order; NEVER refund.
+      if (stockErr?.code === "PERSIST_IN_PROGRESS") {
+        for (let i = 0; i < 10; i += 1) {
+          await sleep(500);
+          const existing = await findExistingPaidOrder(
+            razorpay_order_id,
+            razorpay_payment_id
+          );
+          if (existing) {
+            await commitHold(razorpay_order_id).catch(() => {});
+            return res.status(200).json({
+              success: true,
+              message: "Payment already verified",
+              order: existing,
+            });
+          }
+        }
+        return res.status(409).json({
+          success: false,
+          message:
+            "Payment is being finalized. Please check My Orders in a moment — do not pay again.",
+          code: "PERSIST_IN_PROGRESS",
+        });
+      }
+
+      if (stockErr?.code === "ALREADY_REFUNDED") {
+        await notifyPaymentFailed({
+          relatedCustomerId: orderPayload?.user,
+          reason: stockErr.message,
+          amount: orderPayload?.totalAmount,
+          email: orderPayload?.email,
+          name: orderPayload?.name,
+          contact: orderPayload?.contact,
+          paymentMethod: orderPayload?.paymentMethod || "Razorpay",
+          meta: { razorpay_order_id, razorpay_payment_id },
+        }).catch(() => {});
+        return res.status(409).json({
+          success: false,
+          message: stockErr.message,
+          code: "ALREADY_REFUNDED",
+        });
+      }
+
+      // Only real stock failures should auto-refund a captured payment.
+      if (stockErr?.code === "OUT_OF_STOCK") {
         await safeAutoRefundPayment({
           razorpay_payment_id,
           razorpay_order_id,
@@ -716,6 +823,7 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
           amount: orderPayload?.totalAmount,
           email: orderPayload?.email,
           name: orderPayload?.name,
+          contact: orderPayload?.contact,
           paymentMethod: orderPayload?.paymentMethod || "Razorpay",
           meta: { razorpay_order_id, razorpay_payment_id },
         }).catch(() => {});
@@ -807,6 +915,7 @@ exports.razorpayWebhook = async (req, res) => {
             (payment?.amount != null ? payment.amount / 100 : undefined),
           email: draft.email,
           name: draft.name,
+          contact: draft.contact,
           paymentMethod: "Razorpay",
           meta: {
             razorpay_order_id,
@@ -832,6 +941,7 @@ exports.razorpayWebhook = async (req, res) => {
       );
       if (existing) {
         await commitHold(razorpay_order_id).catch(() => {});
+        ensureConfirmedNotifications(existing, "webhook-duplicate");
         return res.status(200).json({ success: true, duplicate: true });
       }
 
@@ -855,12 +965,21 @@ exports.razorpayWebhook = async (req, res) => {
         orderNote: draft.orderNote || "",
       };
 
-      if (!orderPayload.user || !orderPayload.cart?.length) {
+      const draftReady =
+        Boolean(orderPayload.user) &&
+        Array.isArray(orderPayload.cart) &&
+        orderPayload.cart.length > 0 &&
+        Boolean(orderPayload.address) &&
+        Boolean(orderPayload.contact);
+
+      // Prefer client verify when shipping draft is incomplete — never refund here.
+      if (!draftReady) {
         await commitHold(razorpay_order_id).catch(() => {});
         return res.status(200).json({
           success: true,
           pending_verify: true,
-          message: "Stock committed; waiting for client verify to save order details",
+          message:
+            "Stock committed; waiting for client verify to save order details",
         });
       }
 
@@ -872,14 +991,26 @@ exports.razorpayWebhook = async (req, res) => {
           orderPayload,
         });
       } catch (persistErr) {
-        if (persistErr?.code === "PERSIST_IN_PROGRESS") {
+        if (
+          persistErr?.code === "PERSIST_IN_PROGRESS" ||
+          persistErr?.code === "ALREADY_REFUNDED"
+        ) {
           return res.status(200).json({
             success: true,
             pending: true,
-            message: "Concurrent persist in progress",
+            message: persistErr.message,
           });
         }
-        throw persistErr;
+        // Do not refund from webhook on create errors — client verify is source of truth.
+        console.error(
+          "razorpay webhook persist failed (no refund):",
+          persistErr.message
+        );
+        return res.status(200).json({
+          success: true,
+          pending_verify: true,
+          message: persistErr.message,
+        });
       }
       return res.status(200).json({ success: true });
     }
@@ -1081,6 +1212,28 @@ exports.getSingleOrder = async (req, res, next) => {
     });
   } catch (error) {
     console.log(error);
+    next(error);
+  }
+};
+
+/** Admin: re-send confirmed email + WhatsApp for an order */
+exports.resendOrderConfirmed = async (req, res, next) => {
+  try {
+    const result = await resendOrderConfirmedNotifications(req.params.id, {
+      force: req.body?.force !== false,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Confirmation notifications re-triggered",
+      result,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
     next(error);
   }
 };

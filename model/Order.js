@@ -82,6 +82,9 @@ const orderSchema = new mongoose.Schema(
     },
     statusHistory: { type: [statusHistorySchema], default: [] },
     emailsSent: { type: Object, default: {} },
+    /** Idempotent customer WhatsApp lifecycle markers (mirrors emailsSent) */
+    whatsappSent: { type: Object, default: {} },
+    whatsappSending: { type: Object, default: {} },
     trackingNumber: { type: String, default: "" },
     trackingUrl: { type: String, default: "" },
     cancellation: {

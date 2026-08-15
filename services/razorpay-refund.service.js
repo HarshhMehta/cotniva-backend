@@ -69,6 +69,23 @@ const acquirePersistLock = async (razorpay_payment_id, razorpay_order_id) => {
   }
 
   const now = new Date();
+  const current = await PaymentAttempt.findOne({
+    razorpay_payment_id: String(razorpay_payment_id),
+  });
+  if (current) {
+    if (current.status === "refunded" || current.status === "refund_pending") {
+      return {
+        acquired: false,
+        reason: "already_refunded",
+        attempt: current,
+      };
+    }
+    if (current.status === "order_created") {
+      // Order row missing but attempt marked created — treat as locked/retryable
+      return { acquired: false, reason: "locked", attempt: current };
+    }
+  }
+
   const lockUntil = new Date(now.getTime() + PERSIST_LOCK_MS);
 
   try {
@@ -102,6 +119,12 @@ const acquirePersistLock = async (razorpay_payment_id, razorpay_order_id) => {
     return { acquired: true, attempt };
   } catch (err) {
     if (err?.code === 11000) {
+      const again = await PaymentAttempt.findOne({
+        razorpay_payment_id: String(razorpay_payment_id),
+      });
+      if (again?.status === "refunded" || again?.status === "refund_pending") {
+        return { acquired: false, reason: "already_refunded", attempt: again };
+      }
       return { acquired: false, reason: "locked" };
     }
     throw err;
