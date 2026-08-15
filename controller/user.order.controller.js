@@ -30,7 +30,7 @@ module.exports.getOrderByUser = async (req, res,next) => {
     const totalPendingOrder = await Order.aggregate([
       {
         $match: {
-          status: "pending",
+          status: { $in: ["pending", "confirmed"] },
           user: new mongoose.Types.ObjectId(req.user._id),
         },
       },
@@ -339,7 +339,19 @@ exports.getDashboardRecentOrder = async (req, res,next) => {
     const skip = (pages - 1) * limits;
 
     const queryObject = {
-      status: { $in: ["pending", "processing", "delivered", "cancel"] },
+      status: {
+        $in: [
+          "pending",
+          "confirmed",
+          "processing",
+          "packed",
+          "shipped",
+          "out_for_delivery",
+          "delivered",
+          "cancel",
+          "cancelled",
+        ],
+      },
     };
 
     const totalDoc = await Order.countDocuments(queryObject);

@@ -82,11 +82,24 @@ exports.markAllAsRead = async (req, res, next) => {
 /** Optional client/webhook report for failed payments (no order created). */
 exports.reportPaymentFailed = async (req, res, next) => {
   try {
-    const { reason, amount, relatedCustomerId, meta } = req.body || {};
+    const {
+      reason,
+      amount,
+      relatedCustomerId,
+      email,
+      name,
+      invoice,
+      paymentMethod,
+      meta,
+    } = req.body || {};
     const doc = await notifyPaymentFailed({
       reason,
       amount,
       relatedCustomerId,
+      email,
+      name,
+      invoice,
+      paymentMethod,
       meta,
     });
     res.status(201).json({ success: true, data: doc });

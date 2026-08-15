@@ -9,6 +9,10 @@ const {
   publicUser,
 } = require("../services/session.service");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
+const {
+  verifyGoogleIdToken,
+  findOrLinkGoogleUser,
+} = require("../services/google-auth.service");
 
 const sanitizeUserInput = (body = {}) => ({
   name: String(body.name || "").trim(),
@@ -124,6 +128,59 @@ exports.login = async (req, res, next) => {
       },
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Google Identity Services — verify ID token, link/create user, issue Cotniva session.
+ * Body: { credential }  (GIS ID token)
+ */
+exports.googleLogin = async (req, res, next) => {
+  try {
+    const credential =
+      req.body?.credential || req.body?.idToken || req.body?.token;
+
+    const claims = await verifyGoogleIdToken(credential);
+    const { user, created, linked } = await findOrLinkGoogleUser(claims);
+
+    if (created) {
+      trackCustomerActivity(user._id, "registration", {
+        source: "google",
+      }).catch(() => {});
+    } else if (linked) {
+      trackCustomerActivity(user._id, "login", {
+        source: "google_link",
+      }).catch(() => {});
+    }
+    trackCustomerActivity(user._id, "login", { source: "google" }).catch(
+      () => {}
+    );
+
+    const session = await issueSession(req, res, user);
+
+    res.status(200).json({
+      success: true,
+      status: "success",
+      message: created
+        ? "Account created with Google"
+        : linked
+          ? "Google linked and logged in"
+          : "Logged in with Google",
+      data: {
+        user: session.user,
+        token: session.accessToken,
+        expiresIn: session.expiresIn,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        code: error.code || "GOOGLE_AUTH_FAILED",
+        message: error.message || "Google authentication failed",
+      });
+    }
     next(error);
   }
 };

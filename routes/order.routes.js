@@ -4,6 +4,8 @@ const {
   addOrder,
   getOrders,
   updateOrderStatus,
+  emergencyCancelOrder,
+  getOrderStatusMeta,
   getSingleOrder,
   createRazorpayOrder,
   createMagicCheckoutOrder,
@@ -15,6 +17,7 @@ const {
   updateAdminNotes,
   syncRazorpayAddress,
 } = require("../controller/order.controller");
+const { requireAdmin } = require("../config/auth");
 
 const router = express.Router();
 
@@ -26,6 +29,7 @@ router.get("/magic/promotions", magicGetPromotions);
 router.post("/magic/apply-promotion", magicApplyPromotion);
 
 router.get("/orders", getOrders);
+router.get("/status-meta", getOrderStatusMeta);
 
 // Razorpay
 router.post("/create-razorpay-order", createRazorpayOrder);
@@ -37,9 +41,11 @@ router.post("/release-stock", releaseMagicCheckoutStock);
 router.post("/create-payment-intent", paymentIntent);
 
 router.post("/saveOrder", addOrder);
-router.patch("/update-status/:id", updateOrderStatus);
-router.patch("/update-notes/:id", updateAdminNotes);
-router.post("/sync-razorpay-address/:id", syncRazorpayAddress);
+// Admin-only mutations (customer JWT → 403)
+router.patch("/update-status/:id", requireAdmin, updateOrderStatus);
+router.post("/:id/emergency-cancel", requireAdmin, emergencyCancelOrder);
+router.patch("/update-notes/:id", requireAdmin, updateAdminNotes);
+router.post("/sync-razorpay-address/:id", requireAdmin, syncRazorpayAddress);
 
 // single order last
 router.get("/:id", getSingleOrder);

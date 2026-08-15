@@ -5,8 +5,13 @@ const Order = require("../model/Order");
 const {
   notifyNewOrder,
   notifyPaymentFailed,
-  notifyOrderCancelled,
 } = require("../services/notification.service");
+const {
+  onOrderConfirmedCreated,
+  applyFulfillmentStatus,
+  emergencyCancelOrder,
+  CANCEL_REASONS,
+} = require("../services/order-status.service");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
 const {
   reserveCartStock,
@@ -14,11 +19,49 @@ const {
   getHold,
   commitHold,
   releaseHold,
-  restoreCommittedHold,
   restoreReservations,
   attachCommittedHold,
   newReleaseToken,
 } = require("../services/inventory.service");
+const {
+  safeAutoRefundPayment,
+  acquirePersistLock,
+  releasePersistLock,
+  markPaymentAttemptOrderCreated,
+  applyRazorpayRefundWebhook,
+} = require("../services/razorpay-refund.service");
+const StoreSettings = require("../model/StoreSettings");
+
+const STORE_DEFAULTS = {
+  deliveryCharge: 100,
+  freeShippingAbove: 1299,
+};
+
+const getStoreShippingSettings = async () => {
+  try {
+    const settings = await StoreSettings.findOne().lean();
+    return {
+      deliveryCharge:
+        settings?.deliveryCharge != null
+          ? Number(settings.deliveryCharge)
+          : STORE_DEFAULTS.deliveryCharge,
+      freeShippingAbove:
+        settings?.freeShippingAbove != null
+          ? Number(settings.freeShippingAbove)
+          : STORE_DEFAULTS.freeShippingAbove,
+    };
+  } catch {
+    return { ...STORE_DEFAULTS };
+  }
+};
+
+const resolveShippingCostRupees = (subTotalRupees, settings) => {
+  const charge = Math.max(0, Number(settings?.deliveryCharge) || 0);
+  const threshold = Math.max(0, Number(settings?.freeShippingAbove) || 0);
+  const total = Math.max(0, Number(subTotalRupees) || 0);
+  if (threshold > 0 && total >= threshold) return 0;
+  return charge;
+};
 
 const getRazorpay = () => {
   if (!secret.razorpay_key_id || !secret.razorpay_key_secret) {
@@ -179,6 +222,7 @@ exports.createRazorpayOrder = async (req, res) => {
 /**
  * Magic Checkout order — requires line_items + line_items_total.
  * Body: { cart, amount?, currency?, receipt?, notes?, shippingCost? }
+ * Shipping is resolved from store settings (client shippingCost is ignored for payable).
  * amount = items total + shipping - discount (final payable). If omitted, computed from cart.
  */
 exports.createMagicCheckoutOrder = async (req, res, next) => {
@@ -190,7 +234,6 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       receipt,
       notes,
       discount = 0,
-      shippingCost = 0,
     } = req.body || {};
 
     if (!Array.isArray(cart) || cart.length === 0) {
@@ -212,12 +255,20 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       0
     );
 
+    const storeShip = await getStoreShippingSettings();
+    const subTotalRupees = lineItemsTotal / 100;
+    const shippingCost = resolveShippingCostRupees(subTotalRupees, storeShip);
     const discountPaise = toPaise(discount);
     const shippingPaise = toPaise(shippingCost);
+    const computedPayable = Math.max(
+      0,
+      lineItemsTotal - discountPaise + shippingPaise
+    );
+    // Prefer server-computed payable so Buy Now / checkout cannot omit delivery
     const payable =
-      amount != null
+      amount != null && Math.abs(toPaise(amount) - computedPayable) <= 1
         ? toPaise(amount)
-        : Math.max(0, lineItemsTotal - discountPaise + shippingPaise);
+        : computedPayable;
 
     if (!payable || payable < 100) {
       return res.status(400).json({
@@ -255,6 +306,8 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
           source: "magic_checkout",
           discount_paise: String(discountPaise),
           shipping_paise: String(shippingPaise),
+          delivery_charge: String(storeShip.deliveryCharge),
+          free_shipping_above: String(storeShip.freeShippingAbove),
           stock_reserved: "1",
         },
       });
@@ -267,7 +320,7 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
     const orderDraft = {
       cart,
       user: notes?.userId || null,
-      subTotal: (payable - shippingPaise + discountPaise) / 100,
+      subTotal: subTotalRupees,
       shippingCost: Number(shippingCost) || 0,
       discount: Number(discount) || 0,
       totalAmount: payable / 100,
@@ -291,6 +344,9 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       order,
       releaseToken,
       line_items_total: lineItemsTotal,
+      shippingCost: Number(shippingCost) || 0,
+      deliveryCharge: storeShip.deliveryCharge,
+      freeShippingAbove: storeShip.freeShippingAbove,
     });
   } catch (error) {
     console.log(error);
@@ -386,108 +442,196 @@ const persistVerifiedOrder = async ({
     return { order: already, duplicate: true };
   }
 
-  const razorpay = getRazorpay();
-  const refundPayment = async () => {
-    if (!razorpay_payment_id) return;
-    try {
-      await razorpay.payments.refund(razorpay_payment_id);
-    } catch (refundErr) {
-      console.log("razorpay refund failed:", refundErr.message);
+  const lock = await acquirePersistLock(razorpay_payment_id, razorpay_order_id);
+  if (!lock.acquired) {
+    if (lock.reason === "order_exists" && lock.order) {
+      await commitHold(razorpay_order_id).catch(() => {});
+      return { order: lock.order, duplicate: true };
     }
-  };
-
-  const hold = await getHold(razorpay_order_id);
-  let extraReserved = null;
-  let inventoryReserved =
-    hold?.status === "held" || hold?.status === "committed";
-
-  if (!hold || hold.status === "released") {
-    extraReserved = await reserveCartStock(orderPayload.cart || []);
-    inventoryReserved = true;
-  }
-
-  let rzpOrder = null;
-  let shipping = null;
-  try {
-    const fetched = await fetchRazorpayShipping(razorpay, razorpay_order_id, {
-      tries: 2,
-      delayMs: 400,
-    });
-    rzpOrder = fetched.rzpOrder;
-    shipping = fetched.shipping;
-  } catch (e) {
-    // frontend address is source of truth
-  }
-
-  const orderData = fillOrderDefaults(
-    {
-      ...orderPayload,
-      paymentMethod: orderPayload.paymentMethod || "Razorpay",
-      status: (orderPayload.status || "pending").toLowerCase(),
-      paymentIntent: {
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature: razorpay_signature || "",
-        gateway: "razorpay",
-        shipping_address: shipping?.raw?.shipping_address || null,
-        customer_details:
-          shipping?.raw?.customer_details || rzpOrder?.customer_details || null,
-        shipping_fee: rzpOrder?.shipping_fee ?? shipping?.shipping_fee ?? null,
-        cod_fee: rzpOrder?.cod_fee ?? shipping?.cod_fee ?? null,
-        inventoryReserved: Boolean(inventoryReserved),
-        inventoryRestored: false,
-      },
-    },
-    shipping
-  );
-
-  let orderItems;
-  try {
-    orderItems = await Order.create(orderData);
-  } catch (createErr) {
-    if (isDuplicateKey(createErr)) {
-      const existing = await findExistingPaidOrder(
-        razorpay_order_id,
-        razorpay_payment_id
-      );
-      if (existing) {
-        if (extraReserved) await restoreReservations(extraReserved);
-        await commitHold(razorpay_order_id).catch(() => {});
-        return { order: existing, duplicate: true };
-      }
-    }
-    if (extraReserved) {
-      await restoreReservations(extraReserved);
-    } else {
-      await releaseHold(razorpay_order_id, { internal: true }).catch(() => {});
-    }
-    await refundPayment();
-    throw createErr;
-  }
-
-  if (extraReserved) {
-    await attachCommittedHold(razorpay_order_id, extraReserved, {
-      orderDraft: { cart: orderPayload.cart || [] },
-    }).catch((e) => console.log("save committed hold:", e.message));
-  } else {
-    await commitHold(razorpay_order_id).catch((e) =>
-      console.log("commit stock hold:", e.message)
+    const raced = await findExistingPaidOrder(
+      razorpay_order_id,
+      razorpay_payment_id
     );
+    if (raced) {
+      await commitHold(razorpay_order_id).catch(() => {});
+      return { order: raced, duplicate: true };
+    }
+    const err = new Error(
+      "Payment is already being persisted. Please wait a moment and refresh."
+    );
+    err.statusCode = 409;
+    err.code = "PERSIST_IN_PROGRESS";
+    throw err;
   }
 
-  notifyNewOrder(orderItems, "payment_success").catch((e) =>
-    console.log("notify payment_success:", e.message)
-  );
-  if (orderItems.user) {
-    trackCustomerActivity(orderItems.user, "order_placed", {
-      orderId: orderItems._id,
-      invoice: orderItems.invoice,
-      totalAmount: orderItems.totalAmount,
-      paymentMethod: orderItems.paymentMethod,
-    }).catch(() => {});
-  }
+  const {
+    status: _ignoreStatus,
+    paymentStatus: _ignorePaymentStatus,
+    statusHistory: _ignoreHistory,
+    emailsSent: _ignoreEmails,
+    refund: _ignoreRefund,
+    cancellation: _ignoreCancel,
+    ...safePayload
+  } = orderPayload || {};
 
-  return { order: orderItems, duplicate: false };
+  let extraReserved = null;
+  let inventoryReserved = false;
+
+  try {
+    const hold = await getHold(razorpay_order_id);
+    inventoryReserved =
+      hold?.status === "held" || hold?.status === "committed";
+
+    if (!hold || hold.status === "released") {
+      extraReserved = await reserveCartStock(safePayload.cart || []);
+      inventoryReserved = true;
+    }
+
+    let rzpOrder = null;
+    let shipping = null;
+    try {
+      const razorpay = getRazorpay();
+      const fetched = await fetchRazorpayShipping(razorpay, razorpay_order_id, {
+        tries: 2,
+        delayMs: 400,
+      });
+      rzpOrder = fetched.rzpOrder;
+      shipping = fetched.shipping;
+    } catch (e) {
+      // frontend address is source of truth
+    }
+
+    const orderData = fillOrderDefaults(
+      {
+        ...safePayload,
+        paymentMethod: safePayload.paymentMethod || "Razorpay",
+        // Client must never control fulfillment/payment status
+        status: "confirmed",
+        paymentStatus: "paid",
+        refund: { status: "not_required" },
+        statusHistory: [
+          {
+            from: null,
+            to: "confirmed",
+            at: new Date(),
+            source: "payment",
+            note: "Auto-confirmed after successful Razorpay payment",
+          },
+        ],
+        emailsSent: {},
+        paymentIntent: {
+          razorpay_order_id,
+          razorpay_payment_id,
+          razorpay_signature: razorpay_signature || "",
+          gateway: "razorpay",
+          shipping_address: shipping?.raw?.shipping_address || null,
+          customer_details:
+            shipping?.raw?.customer_details || rzpOrder?.customer_details || null,
+          shipping_fee: rzpOrder?.shipping_fee ?? shipping?.shipping_fee ?? null,
+          cod_fee: rzpOrder?.cod_fee ?? shipping?.cod_fee ?? null,
+          inventoryReserved: Boolean(inventoryReserved),
+          inventoryRestored: false,
+        },
+      },
+      shipping
+    );
+
+    let orderItems;
+    try {
+      orderItems = await Order.create(orderData);
+    } catch (createErr) {
+      if (isDuplicateKey(createErr)) {
+        const existing = await findExistingPaidOrder(
+          razorpay_order_id,
+          razorpay_payment_id
+        );
+        if (existing) {
+          if (extraReserved) await restoreReservations(extraReserved);
+          await commitHold(razorpay_order_id).catch(() => {});
+          await markPaymentAttemptOrderCreated(
+            razorpay_payment_id,
+            existing._id,
+            razorpay_order_id
+          );
+          return { order: existing, duplicate: true };
+        }
+        // Duplicate key is unrelated to this payment (e.g. invoice race) —
+        // do NOT blind-refund a captured payment.
+        if (extraReserved) {
+          await restoreReservations(extraReserved);
+        } else {
+          await releaseHold(razorpay_order_id, { internal: true }).catch(
+            () => {}
+          );
+        }
+        console.log(
+          "[refund]",
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            payment_id: razorpay_payment_id || null,
+            razorpay_order_id: razorpay_order_id || null,
+            reason: "create_duplicate_key_unrelated",
+            source: "persistVerifiedOrder",
+            order_id: null,
+            status: "skipped",
+            skip_reason: "e11000_no_matching_order",
+            refund_id: null,
+          })
+        );
+        throw createErr;
+      }
+
+      if (extraReserved) {
+        await restoreReservations(extraReserved);
+      } else {
+        await releaseHold(razorpay_order_id, { internal: true }).catch(() => {});
+      }
+      // Release persist lock before safety refund so the refund claim can proceed
+      await releasePersistLock(razorpay_payment_id).catch(() => {});
+      await safeAutoRefundPayment({
+        razorpay_payment_id,
+        razorpay_order_id,
+        reason: "order_create_failed",
+        source: "persistVerifiedOrder",
+      });
+      throw createErr;
+    }
+
+    await markPaymentAttemptOrderCreated(
+      razorpay_payment_id,
+      orderItems._id,
+      razorpay_order_id
+    );
+
+    if (extraReserved) {
+      await attachCommittedHold(razorpay_order_id, extraReserved, {
+        orderDraft: { cart: safePayload.cart || [] },
+      }).catch((e) => console.log("save committed hold:", e.message));
+    } else {
+      await commitHold(razorpay_order_id).catch((e) =>
+        console.log("commit stock hold:", e.message)
+      );
+    }
+
+    notifyNewOrder(orderItems, "payment_success").catch((e) =>
+      console.log("notify payment_success:", e.message)
+    );
+    onOrderConfirmedCreated(orderItems).catch((e) =>
+      console.log("confirm emails:", e.message)
+    );
+    if (orderItems.user) {
+      trackCustomerActivity(orderItems.user, "order_placed", {
+        orderId: orderItems._id,
+        invoice: orderItems.invoice,
+        totalAmount: orderItems.totalAmount,
+        paymentMethod: orderItems.paymentMethod,
+      }).catch(() => {});
+    }
+
+    return { order: orderItems, duplicate: false };
+  } finally {
+    await releasePersistLock(razorpay_payment_id).catch(() => {});
+  }
 };
 
 /**
@@ -509,6 +653,9 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
         relatedCustomerId: orderPayload?.user,
         reason: "Missing Razorpay payment fields",
         amount: orderPayload?.totalAmount,
+        email: orderPayload?.email,
+        name: orderPayload?.name,
+        paymentMethod: orderPayload?.paymentMethod || "Razorpay",
         meta: { razorpay_order_id },
       }).catch(() => {});
       return res.status(400).json({
@@ -528,6 +675,9 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
         relatedCustomerId: orderPayload?.user,
         reason: "Invalid payment signature",
         amount: orderPayload?.totalAmount,
+        email: orderPayload?.email,
+        name: orderPayload?.name,
+        paymentMethod: orderPayload?.paymentMethod || "Razorpay",
         meta: { razorpay_order_id, razorpay_payment_id },
       }).catch(() => {});
       return res.status(400).json({
@@ -554,16 +704,19 @@ exports.verifyRazorpayPayment = async (req, res, next) => {
       });
     } catch (stockErr) {
       if (stockErr.statusCode === 409 || stockErr.code === "OUT_OF_STOCK") {
-        try {
-          const razorpay = getRazorpay();
-          await razorpay.payments.refund(razorpay_payment_id);
-        } catch (refundErr) {
-          console.log("razorpay refund failed:", refundErr.message);
-        }
+        await safeAutoRefundPayment({
+          razorpay_payment_id,
+          razorpay_order_id,
+          reason: "out_of_stock",
+          source: "verifyRazorpayPayment",
+        });
         await notifyPaymentFailed({
           relatedCustomerId: orderPayload?.user,
           reason: stockErr.message,
           amount: orderPayload?.totalAmount,
+          email: orderPayload?.email,
+          name: orderPayload?.name,
+          paymentMethod: orderPayload?.paymentMethod || "Razorpay",
           meta: { razorpay_order_id, razorpay_payment_id },
         }).catch(() => {});
         return res.status(409).json({
@@ -607,11 +760,60 @@ exports.razorpayWebhook = async (req, res) => {
     const event = payload?.event;
     const payment = payload?.payload?.payment?.entity;
     const orderEntity = payload?.payload?.order?.entity;
+    const refundEntity = payload?.payload?.refund?.entity;
     const razorpay_order_id = payment?.order_id || orderEntity?.id;
-    const razorpay_payment_id = payment?.id || orderEntity?.payments?.[0];
+    const razorpay_payment_id =
+      payment?.id ||
+      refundEntity?.payment_id ||
+      orderEntity?.payments?.[0];
+
+    if (
+      event === "refund.processed" ||
+      event === "refund.created" ||
+      event === "payment.refunded"
+    ) {
+      const paymentId =
+        razorpay_payment_id ||
+        refundEntity?.payment_id ||
+        payment?.id;
+      const refundId = refundEntity?.id || payment?.refund_id || "";
+      const amount =
+        refundEntity?.amount != null
+          ? Number(refundEntity.amount) / 100
+          : payment?.amount_refunded != null
+            ? Number(payment.amount_refunded) / 100
+            : undefined;
+      await applyRazorpayRefundWebhook({
+        razorpay_payment_id: paymentId,
+        refundId,
+        amount,
+        event,
+      });
+      return res.status(200).json({ success: true });
+    }
 
     if (event === "payment.failed") {
       if (razorpay_order_id) {
+        const hold = await getHold(razorpay_order_id).catch(() => null);
+        const draft = hold?.orderDraft || {};
+        await notifyPaymentFailed({
+          relatedCustomerId: draft.user,
+          reason:
+            payment?.error_description ||
+            payment?.error_reason ||
+            "Payment failed at Razorpay",
+          amount:
+            draft.totalAmount ??
+            (payment?.amount != null ? payment.amount / 100 : undefined),
+          email: draft.email,
+          name: draft.name,
+          paymentMethod: "Razorpay",
+          meta: {
+            razorpay_order_id,
+            razorpay_payment_id,
+            event,
+          },
+        }).catch(() => {});
         await releaseHold(razorpay_order_id, { internal: true });
       }
       return res.status(200).json({ success: true });
@@ -650,7 +852,6 @@ exports.razorpayWebhook = async (req, res) => {
         discount: draft.discount,
         totalAmount: draft.totalAmount,
         paymentMethod: "Razorpay",
-        status: "pending",
         orderNote: draft.orderNote || "",
       };
 
@@ -663,12 +864,23 @@ exports.razorpayWebhook = async (req, res) => {
         });
       }
 
-      await persistVerifiedOrder({
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature: `webhook:${event}`,
-        orderPayload,
-      });
+      try {
+        await persistVerifiedOrder({
+          razorpay_order_id,
+          razorpay_payment_id,
+          razorpay_signature: `webhook:${event}`,
+          orderPayload,
+        });
+      } catch (persistErr) {
+        if (persistErr?.code === "PERSIST_IN_PROGRESS") {
+          return res.status(200).json({
+            success: true,
+            pending: true,
+            message: "Concurrent persist in progress",
+          });
+        }
+        throw persistErr;
+      }
       return res.status(200).json({ success: true });
     }
 
@@ -751,7 +963,8 @@ exports.magicShippingInfo = async (req, res) => {
   try {
     const body = req.method === "GET" ? req.query : req.body;
     const addresses = body?.addresses || [];
-    const FREE_SHIP = 1299;
+    const storeShip = await getStoreShippingSettings();
+    const shippingFeePaise = toPaise(storeShip.deliveryCharge);
     // Prefer notes shipping if present; default free above threshold via zero fee + standard
     const responseAddresses = (addresses.length ? addresses : [{ id: "0" }]).map(
       (a) => ({
@@ -762,10 +975,15 @@ exports.magicShippingInfo = async (req, res) => {
         shipping_methods: [
           {
             id: "standard",
-            name: "Standard",
-            description: "7–10 business days",
+            name: "Standard delivery",
+            description:
+              storeShip.freeShippingAbove > 0
+                ? `Delivery ₹${storeShip.deliveryCharge} · free above ₹${storeShip.freeShippingAbove}`
+                : `Delivery ₹${storeShip.deliveryCharge}`,
             serviceability: true,
             cod: true,
+            // Amount already includes store shipping on create; keep callback fee 0
+            // to avoid double-charging when Cotniva address + create path is used.
             shipping_fee: 0,
             cod_fee: 0,
             delivery_date_range: {
@@ -779,7 +997,7 @@ exports.magicShippingInfo = async (req, res) => {
             description: "1–3 business days",
             serviceability: true,
             cod: true,
-            shipping_fee: 9900,
+            shipping_fee: Math.max(shippingFeePaise, 9900),
             cod_fee: 0,
             delivery_date_range: {
               start: Math.floor(Date.now() / 1000) + 1 * 86400,
@@ -794,8 +1012,8 @@ exports.magicShippingInfo = async (req, res) => {
     res.status(200).json({
       addresses: responseAddresses,
       cod_fee: 0,
-      // hint unused by some SDKs
-      free_shipping_threshold: FREE_SHIP,
+      free_shipping_threshold: storeShip.freeShippingAbove,
+      delivery_charge: storeShip.deliveryCharge,
     });
   } catch (error) {
     console.log(error);
@@ -847,8 +1065,20 @@ exports.getOrders = async (req, res, next) => {
 
 exports.getSingleOrder = async (req, res, next) => {
   try {
+    const {
+      getAllowedNextStatuses,
+      canEmergencyCancel,
+    } = require("../services/order-status.service");
     const orderItem = await Order.findById(req.params.id).populate("user");
-    res.status(200).json(orderItem);
+    if (!orderItem) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    const plain = orderItem.toObject ? orderItem.toObject() : orderItem;
+    res.status(200).json({
+      ...plain,
+      allowedNext: getAllowedNextStatuses(plain.status),
+      canEmergencyCancel: canEmergencyCancel(plain.status),
+    });
   } catch (error) {
     console.log(error);
     next(error);
@@ -892,47 +1122,99 @@ exports.releaseMagicCheckoutStock = async (req, res, next) => {
 };
 
 exports.updateOrderStatus = async (req, res, next) => {
-  const newStatus = req.body.status;
   try {
-    const existing = await Order.findById(req.params.id);
-    if (!existing) {
-      return res.status(404).json({ success: false, message: "Order not found" });
-    }
+    const newStatus = req.body.status;
+    const trackingNumber = req.body.trackingNumber;
+    const trackingUrl = req.body.trackingUrl;
 
-    const goingCancel =
-      String(newStatus).toLowerCase() === "cancel" &&
-      String(existing.status || "").toLowerCase() !== "cancel";
-
-    if (goingCancel && existing.paymentIntent?.inventoryReserved && !existing.paymentIntent?.inventoryRestored) {
-      const restored = await restoreCommittedHold(
-        existing.paymentIntent?.razorpay_order_id,
-        existing.cart
-      );
-      if (restored) {
-        existing.paymentIntent = {
-          ...(existing.paymentIntent?.toObject?.() || existing.paymentIntent || {}),
-          inventoryRestored: true,
-        };
-      }
-    }
-
-    existing.status = newStatus;
-    const order = await existing.save();
-
-    if (String(newStatus).toLowerCase() === "cancel") {
-      notifyOrderCancelled(order).catch((e) =>
-        console.log("notify cancel:", e.message)
-      );
-    }
+    const result = await applyFulfillmentStatus({
+      orderId: req.params.id,
+      nextStatus: newStatus,
+      admin: req.user
+        ? { _id: req.user._id, email: req.user.email, name: req.user.name }
+        : undefined,
+      trackingNumber,
+      trackingUrl,
+    });
 
     res.status(200).json({
       success: true,
-      message: "Status updated successfully",
+      message: result.unchanged
+        ? "Status unchanged"
+        : "Status updated successfully",
+      order: result.order,
+      allowedNext: result.allowedNext,
     });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
     console.log(error);
     next(error);
   }
+};
+
+exports.emergencyCancelOrder = async (req, res, next) => {
+  try {
+    const reasonCode = req.body.reasonCode || req.body.reason_code;
+    const reasonText = req.body.reason || req.body.reasonText;
+
+    const result = await emergencyCancelOrder({
+      orderId: req.params.id,
+      reasonCode,
+      reasonText,
+      admin: req.user
+        ? { _id: req.user._id, email: req.user.email, name: req.user.name }
+        : undefined,
+    });
+
+    const refundFailed = result.refund && result.refund.ok === false;
+
+    res.status(200).json({
+      success: true,
+      message: result.alreadyCancelled
+        ? "Order was already cancelled"
+        : refundFailed
+          ? "Order cancelled. Refund failed — manual action required."
+          : result.refund?.status === "completed"
+            ? "Order cancelled and refund completed"
+            : "Order cancelled and refund initiated",
+      order: result.order,
+      refund: result.refund,
+      inventoryRestored: result.inventoryRestored,
+      alreadyCancelled: result.alreadyCancelled,
+      cancelReasons: CANCEL_REASONS,
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+    }
+    console.log(error);
+    next(error);
+  }
+};
+
+exports.getOrderStatusMeta = async (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: {
+      cancelReasons: CANCEL_REASONS,
+      transitions: {
+        confirmed: ["processing"],
+        processing: ["packed"],
+        packed: ["shipped"],
+        shipped: ["out_for_delivery"],
+        out_for_delivery: ["delivered"],
+      },
+      emergencyCancelFrom: ["confirmed", "pending", "processing", "packed"],
+    },
+  });
 };
 
 exports.updateAdminNotes = async (req, res, next) => {

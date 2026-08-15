@@ -57,6 +57,22 @@ const userSchema = mongoose.Schema(
       sparse: true,
       index: true,
     },
+    /** Google Identity `sub` — stable account id (not email) */
+    googleId: {
+      type: String,
+      required: false,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    googleSignIn: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
     address: {
       type: String,
       required: false,

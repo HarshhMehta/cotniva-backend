@@ -1,5 +1,45 @@
 const mongoose = require("mongoose");
 
+const FULFILLMENT_STATUSES = [
+  "pending", // legacy only
+  "confirmed",
+  "processing",
+  "packed",
+  "shipped",
+  "out_for_delivery",
+  "delivered",
+  "cancel", // legacy spelling
+  "cancelled",
+];
+
+const PAYMENT_STATUSES = ["pending", "paid", "failed", "refunded"];
+
+const REFUND_STATUSES = [
+  "not_required",
+  "pending",
+  "initiated",
+  "completed",
+  "failed",
+];
+
+const statusHistorySchema = new mongoose.Schema(
+  {
+    from: { type: String, default: null },
+    to: { type: String, required: true },
+    at: { type: Date, default: Date.now },
+    source: {
+      type: String,
+      enum: ["system", "payment", "admin", "webhook", "migration"],
+      default: "system",
+    },
+    adminId: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    adminEmail: { type: String },
+    reason: { type: String },
+    note: { type: String },
+  },
+  { _id: false }
+);
+
 const orderSchema = new mongoose.Schema(
   {
     user: {
@@ -8,90 +48,68 @@ const orderSchema = new mongoose.Schema(
       required: true,
     },
     cart: [{}],
-    name: {
+    name: { type: String, required: true },
+    address: { type: String, required: true },
+    email: { type: String, required: true },
+    contact: { type: String, required: true },
+    city: { type: String, required: true },
+    country: { type: String, required: true },
+    zipCode: { type: String, required: true },
+    subTotal: { type: Number, required: true },
+    shippingCost: { type: Number, required: true },
+    discount: { type: Number, required: true, default: 0 },
+    totalAmount: { type: Number, required: true },
+    shippingOption: { type: String, required: false },
+    cardInfo: { type: Object, required: false },
+    paymentIntent: { type: Object, required: false },
+    paymentMethod: { type: String, required: true },
+    paymentStatus: {
       type: String,
-      required: true,
+      enum: PAYMENT_STATUSES,
+      default: "pending",
+      lowercase: true,
+      index: true,
     },
-    address: {
-      type: String,
-      required: true,
-    },
-    email: {
-      type: String,
-      required: true,
-    },
-    contact: {
-      type: String,
-      required: true,
-    },
-
-    city: {
-      type: String,
-      required: true,
-    },
-    country: {
-      type: String,
-      required: true,
-    },
-    zipCode: {
-      type: String,
-      required: true,
-    },
-    subTotal: {
-      type: Number,
-      required: true,
-    },
-    shippingCost: {
-      type: Number,
-      required: true,
-    },
-    discount: {
-      type: Number,
-      required: true,
-      default: 0,
-    },
-    totalAmount: {
-      type: Number,
-      required: true,
-    },
-    shippingOption: {
-      type: String,
-      required: false,
-    },
-    cardInfo: {
-      type: Object,
-      required: false,
-    },
-    paymentIntent: {
-      type: Object,
-      required: false,
-    },
-    paymentMethod: {
-      type: String,
-      required: true,
-    },
-    orderNote: {
-      type: String,
-      required: false,
-    },
-    adminNotes: {
-      type: String,
-      required: false,
-      default: "",
-    },
-    invoice: {
-      type: Number,
-      unique: true,
-    },
+    orderNote: { type: String, required: false },
+    adminNotes: { type: String, required: false, default: "" },
+    invoice: { type: Number, unique: true },
     status: {
       type: String,
-      enum: ["pending", "processing", "delivered",'cancel'],
+      enum: FULFILLMENT_STATUSES,
       lowercase: true,
+      default: "confirmed",
+      index: true,
+    },
+    statusHistory: { type: [statusHistorySchema], default: [] },
+    emailsSent: { type: Object, default: {} },
+    trackingNumber: { type: String, default: "" },
+    trackingUrl: { type: String, default: "" },
+    cancellation: {
+      reason: { type: String, default: "" },
+      reasonCode: { type: String, default: "" },
+      cancelledAt: { type: Date },
+      cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+      cancelledByEmail: { type: String, default: "" },
+    },
+    refund: {
+      status: {
+        type: String,
+        enum: REFUND_STATUSES,
+        default: "not_required",
+        lowercase: true,
+      },
+      razorpayRefundId: { type: String, default: "" },
+      amount: { type: Number },
+      initiatedAt: { type: Date },
+      completedAt: { type: Date },
+      failedAt: { type: Date },
+      error: { type: String, default: "" },
+      lastAttemptAt: { type: Date },
+      source: { type: String, default: "" },
+      reason: { type: String, default: "" },
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 orderSchema.index(
@@ -103,22 +121,18 @@ orderSchema.index(
   { unique: true, sparse: true }
 );
 
-// define pre-save middleware to generate the invoice number
-orderSchema.pre('save', async function (next) {
+orderSchema.pre("save", async function (next) {
   const order = this;
-  if (!order.invoice) { // check if the order already has an invoice number
+  if (!order.invoice) {
     try {
-      // find the highest invoice number in the orders collection
       const highestInvoice = await mongoose
-        .model('Order')
+        .model("Order")
         .find({})
-        .sort({ invoice: 'desc' })
+        .sort({ invoice: "desc" })
         .limit(1)
         .select({ invoice: 1 });
-      // if there are no orders in the collection, start at 1000
-      const startingInvoice = highestInvoice.length === 0 ? 1000 : highestInvoice[0].invoice + 1;
-      // set the invoice number for the new order
-      order.invoice = startingInvoice;
+      order.invoice =
+        highestInvoice.length === 0 ? 1000 : highestInvoice[0].invoice + 1;
       next();
     } catch (error) {
       next(error);
@@ -129,4 +143,9 @@ orderSchema.pre('save', async function (next) {
 });
 
 const Order = mongoose.models.Order || mongoose.model("Order", orderSchema);
+
+Order.FULFILLMENT_STATUSES = FULFILLMENT_STATUSES;
+Order.PAYMENT_STATUSES = PAYMENT_STATUSES;
+Order.REFUND_STATUSES = REFUND_STATUSES;
+
 module.exports = Order;

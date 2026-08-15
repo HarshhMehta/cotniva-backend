@@ -30,6 +30,7 @@ const loginLimiter = rateLimit({
 
 router.post("/register", authLimiter, requireStoreOrigin, authController.register);
 router.post("/login", loginLimiter, requireStoreOrigin, authController.login);
+router.post("/google", loginLimiter, requireStoreOrigin, authController.googleLogin);
 router.post("/refresh", authLimiter, requireStoreOrigin, authController.refresh);
 router.post("/logout", requireStoreOrigin, authController.logout);
 router.post("/logout-all", verifyToken, requireStoreOrigin, authController.logoutAll);

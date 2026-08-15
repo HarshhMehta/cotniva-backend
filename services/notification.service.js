@@ -1,12 +1,8 @@
 const EventEmitter = require("events");
 const Notification = require("../model/Notification");
+const { sendOrderFailedEmails } = require("./order-email.service");
 const NOTIFICATION_TYPES = Notification.NOTIFICATION_TYPES;
 
-/**
- * In-process bus — Socket.io (or any realtime layer) can subscribe later:
- *   notificationBus.on("notification:created", (doc) => io.emit(...))
- * Business logic always goes through createNotification / helpers.
- */
 const notificationBus = new EventEmitter();
 notificationBus.setMaxListeners(50);
 
@@ -51,10 +47,11 @@ const notifyNewOrder = async (order, extraType) => {
   };
   const messages = {
     new_order: `${name} placed an order for ₹${amount}`,
-    payment_success: `${name} paid ₹${amount} via Razorpay ${invoice}`.trim(),
+    payment_success: `${name} paid ₹${amount} · order confirmed ${invoice}`.trim(),
     cod_order: `Cash on delivery order from ${name} · ₹${amount}`,
   };
 
+  // In-app only — emails are sent via order-status / claimEmailSlot
   return createNotification({
     title: titles[type] || titles.new_order,
     message: messages[type] || messages.new_order,
@@ -64,7 +61,9 @@ const notifyNewOrder = async (order, extraType) => {
     meta: {
       invoice: order?.invoice,
       paymentMethod: order?.paymentMethod,
+      paymentStatus: order?.paymentStatus,
       totalAmount: order?.totalAmount,
+      status: order?.status,
     },
   });
 };
@@ -73,26 +72,49 @@ const notifyPaymentFailed = async ({
   relatedCustomerId,
   reason,
   amount,
+  email,
+  name,
+  invoice,
+  paymentMethod,
   meta = {},
 } = {}) => {
-  return createNotification({
+  const doc = await createNotification({
     title: "Payment failed",
     message: reason || "A customer payment attempt failed",
     type: "payment_failed",
     relatedCustomerId: relatedCustomerId || undefined,
-    meta: { amount, ...meta },
+    meta: { amount, email, name, invoice, ...meta },
   });
+
+  sendOrderFailedEmails({
+    email,
+    name,
+    reason,
+    amount,
+    invoice,
+    paymentMethod,
+    meta,
+  }).catch((e) => console.error("order failed email:", e.message));
+
+  return doc;
 };
 
 const notifyOrderCancelled = async (order) => {
   const invoice = order?.invoice != null ? `#${order.invoice}` : "";
   return createNotification({
     title: `Order cancelled ${invoice}`.trim(),
-    message: `Order ${invoice || order?._id} was cancelled`,
+    message: `Order ${invoice || order?._id} was cancelled${
+      order?.cancellation?.reason ? ` · ${order.cancellation.reason}` : ""
+    }`,
     type: "order_cancelled",
     relatedOrderId: order?._id,
     relatedCustomerId: order?.user?._id || order?.user || undefined,
-    meta: { invoice: order?.invoice, status: "cancel" },
+    meta: {
+      invoice: order?.invoice,
+      status: "cancelled",
+      refundStatus: order?.refund?.status,
+      reason: order?.cancellation?.reason,
+    },
   });
 };
 

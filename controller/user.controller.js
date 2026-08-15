@@ -316,62 +316,47 @@ exports.updateUser = async (req, res, next) => {
   }
 };
 
-// signUpWithProvider
-exports.signUpWithProvider = async (req, res,next) => {
+// signUpWithProvider (legacy) — verify Google ID token; do not trust jwt.decode
+exports.signUpWithProvider = async (req, res, next) => {
   try {
-    const user = jwt.decode(req.params.token);
-    if (!user?.email) {
-      return res.status(400).json({
-        status: "fail",
-        message: "Invalid Google token",
-      });
-    }
-    const isAdded = await User.findOne({ email: user.email });
-    if (isAdded) {
-      trackCustomerActivity(isAdded._id, "login", { source: "google" }).catch(
-        () => {}
-      );
-      const session = await issueSession(req, res, isAdded);
-      res.status(200).send({
-        status: "success",
-        data: {
-          token: session.accessToken,
-          expiresIn: session.expiresIn,
-          user: {
-            ...session.user,
-            googleSignIn: true,
-          },
-        },
-      });
-    } else {
-      const newUser = new User({
-        name: user.name,
-        email: user.email,
-        imageURL: user.picture,
-        status: 'active'
-      });
+    const {
+      verifyGoogleIdToken,
+      findOrLinkGoogleUser,
+    } = require("../services/google-auth.service");
+    const { issueSession } = require("../services/session.service");
 
-      const signUpUser = await newUser.save();
-      trackCustomerActivity(signUpUser._id, "registration", {
+    const credential = req.params.token || req.body?.credential;
+    const claims = await verifyGoogleIdToken(credential);
+    const { user, created, linked } = await findOrLinkGoogleUser(claims);
+
+    if (created) {
+      trackCustomerActivity(user._id, "registration", {
         source: "google",
       }).catch(() => {});
-      trackCustomerActivity(signUpUser._id, "login", { source: "google" }).catch(
-        () => {}
-      );
-      const session = await issueSession(req, res, signUpUser);
-      res.status(200).send({
-        status: "success",
-        data: {
-          token: session.accessToken,
-          expiresIn: session.expiresIn,
-          user: {
-            ...session.user,
-            googleSignIn: true,
-          }
-        },
+    }
+    trackCustomerActivity(user._id, "login", {
+      source: linked ? "google_link" : "google",
+    }).catch(() => {});
+
+    const session = await issueSession(req, res, user);
+    res.status(200).send({
+      status: "success",
+      success: true,
+      data: {
+        token: session.accessToken,
+        expiresIn: session.expiresIn,
+        user: session.user,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        status: "fail",
+        success: false,
+        code: error.code,
+        message: error.message,
       });
     }
-  } catch (error) {
-    next(error)
+    next(error);
   }
 };
