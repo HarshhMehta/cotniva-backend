@@ -5,13 +5,12 @@ const { Readable } = require('stream');
 
 const cloudinaryImageUpload = (imageBuffer) => {
   return new Promise((resolve, reject) => {
+    // Do not force-resize on upload. The old width/height:1000 limit crushed
+    // portrait mobile slider art (~1080×1440 → ~750px wide) and looked blurry on phones.
     const uploadStream = cloudinary.uploader.upload_stream(
-      { 
+      {
         upload_preset: secret.cloudinary_upload_preset,
-        transformation: null,
-        crop: "limit",
-        width: 1920,
-        height: 1000,
+        quality: "auto:best",
       },
       (error, result) => {
         if (error) reject(error);
