@@ -93,6 +93,7 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/checkout-abandon", require("./routes/checkoutAbandon.routes"));
 app.use("/api/newsletter", require("./routes/newsletter.routes"));
+app.use("/api/contact", require("./routes/contact.routes"));
 
 app.get("/", (req, res) => res.send("Apps worked successfully"));
 
