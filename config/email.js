@@ -2,23 +2,18 @@ require("dotenv").config();
 const nodemailer = require("nodemailer");
 const { secret } = require("./secret");
 
-let transporter;
-
 const SMTP_TIMEOUT_MS = Math.max(
   8000,
-  Number(process.env.SMTP_TIMEOUT_MS) || 20000
+  Number(process.env.SMTP_TIMEOUT_MS) || 30000
 );
 
-const getTransporter = () => {
-  if (transporter) return transporter;
+const basePort = Number(secret.email_port || 587);
+const baseSecure =
+  secret.email_secure === true ||
+  secret.email_secure === "true" ||
+  basePort === 465;
 
-  const port = Number(secret.email_port || 587);
-  const secure =
-    secret.email_secure === true ||
-    secret.email_secure === "true" ||
-    port === 465;
-
-  // Prefer host+port for Gmail app passwords; timeouts prevent order-flow hangs
+const buildTransportConfig = ({ port, secure }) => {
   const config = {
     host: secret.email_host || "smtp.gmail.com",
     port,
@@ -27,18 +22,51 @@ const getTransporter = () => {
       user: secret.email_user,
       pass: String(secret.email_pass || "").replace(/\s+/g, ""),
     },
+    pool: false,
+    maxConnections: 1,
     connectionTimeout: SMTP_TIMEOUT_MS,
-    greetingTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: Math.min(15000, SMTP_TIMEOUT_MS),
     socketTimeout: SMTP_TIMEOUT_MS,
     tls: { rejectUnauthorized: true },
   };
-
   if (!secure && port === 587) {
     config.requireTLS = true;
   }
+  return config;
+};
 
-  transporter = nodemailer.createTransport(config);
-  return transporter;
+/** Primary env port, then Gmail alternate (Render often blocks 587 or 465). */
+const smtpAttempts = () => {
+  const primary = { port: basePort, secure: baseSecure };
+  const alt =
+    basePort === 465
+      ? { port: 587, secure: false }
+      : { port: 465, secure: true };
+  if (primary.port === alt.port) return [primary];
+  return [primary, alt];
+};
+
+const timeoutError = (ms) =>
+  new Promise((_, reject) => {
+    const t = setTimeout(() => {
+      reject(new Error(`SMTP send timed out after ${ms}ms`));
+    }, ms);
+    if (typeof t.unref === "function") t.unref();
+  });
+
+const sendWithTransporter = async (transporter, mail) => {
+  try {
+    return await Promise.race([
+      transporter.sendMail(mail),
+      timeoutError(SMTP_TIMEOUT_MS),
+    ]);
+  } finally {
+    try {
+      transporter.close();
+    } catch {
+      /* ignore */
+    }
+  }
 };
 
 /** Fire-and-forget / awaitable send — does not touch Express `res` */
@@ -48,22 +76,31 @@ const sendMailAsync = async (mailOptions = {}) => {
   }
 
   const from =
-    mailOptions.from ||
-    `"Cotniva" <${secret.email_user}>`;
+    mailOptions.from || `"Cotniva" <${secret.email_user}>`;
+  const payload = { ...mailOptions, from };
 
-  const sendPromise = getTransporter().sendMail({
-    ...mailOptions,
-    from,
-  });
+  let lastError;
+  for (const attempt of smtpAttempts()) {
+    const transporter = nodemailer.createTransport(
+      buildTransportConfig(attempt)
+    );
+    try {
+      const info = await sendWithTransporter(transporter, payload);
+      if (attempt.port !== basePort) {
+        console.warn(
+          `[smtp] sent via fallback ${secret.email_host || "smtp.gmail.com"}:${attempt.port}`
+        );
+      }
+      return info;
+    } catch (err) {
+      lastError = err;
+      console.warn(
+        `[smtp] ${secret.email_host || "smtp.gmail.com"}:${attempt.port} failed: ${err.message}`
+      );
+    }
+  }
 
-  const timeoutPromise = new Promise((_, reject) => {
-    const t = setTimeout(() => {
-      reject(new Error(`SMTP send timed out after ${SMTP_TIMEOUT_MS}ms`));
-    }, SMTP_TIMEOUT_MS);
-    if (typeof t.unref === "function") t.unref();
-  });
-
-  return Promise.race([sendPromise, timeoutPromise]);
+  throw lastError || new Error("SMTP send failed");
 };
 
 /**
@@ -88,5 +125,4 @@ module.exports.sendEmail = (body, res, message) => {
 };
 
 module.exports.sendMailAsync = sendMailAsync;
-module.exports.getTransporter = getTransporter;
 module.exports.SMTP_TIMEOUT_MS = SMTP_TIMEOUT_MS;

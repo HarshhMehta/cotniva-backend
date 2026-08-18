@@ -259,16 +259,14 @@ const sendOrderConfirmedEmails = async (order) => {
 
   const jobs = [];
   if (!isPlaceholderEmail(order.email)) {
-    jobs.push(
-      sendOrThrow("customer-confirm", {
+    jobs.push({
+      label: "customer-confirm",
+      mail: {
         to: order.email,
         subject: `Order confirmed ${invoice} · ${BRAND}`,
         html: customerHtml,
-      }).catch((err) => {
-        console.error("[order-email] customer-confirm failed:", err.message);
-        throw err;
-      })
-    );
+      },
+    });
   } else {
     console.warn(
       `[order-email] customer-confirm skipped placeholder email=${order.email}`
@@ -276,16 +274,14 @@ const sendOrderConfirmedEmails = async (order) => {
   }
   const adminTo = adminInbox();
   if (adminTo) {
-    jobs.push(
-      sendOrThrow("admin-new-order", {
+    jobs.push({
+      label: "admin-new-order",
+      mail: {
         to: adminTo,
         subject: `New order ${invoice} · ${inr(order.totalAmount)} · ${BRAND}`,
         html: adminHtml,
-      }).catch((err) => {
-        console.error("[order-email] admin-new-order failed:", err.message);
-        throw err;
-      })
-    );
+      },
+    });
   } else {
     console.warn("[order-email] admin-new-order skipped (ADMIN_ORDER_EMAIL empty)");
   }
@@ -293,16 +289,23 @@ const sendOrderConfirmedEmails = async (order) => {
     console.warn("[order-email] confirmed: no recipients");
     return;
   }
-  // Send independently so one failure does not block the other
-  const results = await Promise.allSettled(jobs);
-  const failed = results.filter((r) => r.status === "rejected");
-  if (failed.length === results.length) {
-    throw failed[0].reason || new Error("All confirmation emails failed");
+  // Sequential: Render/Gmail often time out if two SMTP connections open at once
+  const errors = [];
+  for (const job of jobs) {
+    try {
+      await sendOrThrow(job.label, job.mail);
+    } catch (err) {
+      console.error(`[order-email] ${job.label} failed:`, err.message);
+      errors.push(err);
+    }
   }
-  if (failed.length) {
+  if (errors.length === jobs.length) {
+    throw errors[0] || new Error("All confirmation emails failed");
+  }
+  if (errors.length) {
     console.error(
       "[order-email] confirmed partial failure:",
-      failed.map((f) => f.reason?.message || f.reason).join("; ")
+      errors.map((e) => e.message).join("; ")
     );
   }
 };
