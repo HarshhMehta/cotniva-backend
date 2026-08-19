@@ -285,14 +285,45 @@ exports.updateUser = async (req, res, next) => {
       });
     }
 
+    const actorId = String(req.user?._id || req.user?.id || "");
+    if (actorId && actorId !== String(userId)) {
+      return res.status(403).json({
+        status: "fail",
+        success: false,
+        message: "You can only update your own profile",
+      });
+    }
+
+    const normalizePhone = (raw = "") => {
+      let d = String(raw || "").replace(/\D/g, "");
+      if (d.startsWith("91") && d.length >= 12) d = d.slice(-10);
+      else if (d.startsWith("0") && d.length >= 11) d = d.replace(/^0+/, "");
+      else if (d.length > 10) d = d.slice(-10);
+      if (d.startsWith("0") && d.length === 10) d = d.slice(1);
+      return d.slice(0, 10);
+    };
+
     if (req.body.name !== undefined && String(req.body.name).trim()) {
-      user.name = String(req.body.name).trim();
+      const name = String(req.body.name).trim();
+      if (name.length >= 3) user.name = name;
     }
     if (req.body.email !== undefined && String(req.body.email).trim()) {
-      user.email = String(req.body.email).trim().toLowerCase();
+      const email = String(req.body.email).trim().toLowerCase();
+      const takenEmail = await User.findOne({
+        email,
+        _id: { $ne: user._id },
+      }).select("_id");
+      if (!takenEmail) user.email = email;
     }
     if (req.body.phone !== undefined && String(req.body.phone).trim()) {
-      user.phone = String(req.body.phone).trim();
+      const phone = normalizePhone(req.body.phone);
+      if (/^[6-9]\d{9}$/.test(phone)) {
+        const takenPhone = await User.findOne({
+          phone,
+          _id: { $ne: user._id },
+        }).select("_id");
+        if (!takenPhone) user.phone = phone;
+      }
     }
     if (req.body.address !== undefined) {
       user.address = req.body.address;
@@ -301,7 +332,32 @@ exports.updateUser = async (req, res, next) => {
       user.bio = req.body.bio;
     }
 
-    const updatedUser = await user.save();
+    let updatedUser;
+    try {
+      updatedUser = await user.save();
+    } catch (saveErr) {
+      if (saveErr?.code === 11000) {
+        const field = Object.keys(saveErr.keyPattern || {})[0] || "field";
+        return res.status(409).json({
+          status: "fail",
+          success: false,
+          message:
+            field === "phone"
+              ? "This mobile number is already used on another account."
+              : field === "email"
+                ? "This email is already used on another account."
+                : "That value is already in use.",
+        });
+      }
+      if (saveErr?.name === "ValidationError") {
+        return res.status(400).json({
+          status: "fail",
+          success: false,
+          message: saveErr.message || "Invalid profile details",
+        });
+      }
+      throw saveErr;
+    }
     const token = generateToken(updatedUser);
     res.status(200).json({
       status: "success",

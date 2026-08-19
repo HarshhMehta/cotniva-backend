@@ -26,7 +26,7 @@ router.put('/addresses/:addrId', verifyToken, requireStoreOrigin, addressControl
 router.patch('/addresses/:addrId/default', verifyToken, requireStoreOrigin, addressController.setDefault);
 router.delete('/addresses/:addrId', verifyToken, requireStoreOrigin, addressController.remove);
 // updateUser
-router.put('/update-user/:id', userController.updateUser);
+router.put('/update-user/:id', verifyToken, userController.updateUser);
 // register or login with google
 router.post("/register/:token", userController.signUpWithProvider);
 

@@ -20,6 +20,16 @@ const globalErrorHandler = (error, req, res, next) => {
     statusCode = simplifiedError.statusCode;
     message = simplifiedError.message;
     errorMessages = simplifiedError.errorMessages;
+  } else if (error?.code === 11000) {
+    statusCode = 409;
+    const field = Object.keys(error.keyPattern || {})[0] || 'value';
+    message =
+      field === 'phone'
+        ? 'This mobile number is already used on another account.'
+        : field === 'email'
+          ? 'This email is already used on another account.'
+          : 'That value is already in use.';
+    errorMessages = [{ path: field, message }];
   } else if (error instanceof ApiError) {
     statusCode = error?.statusCode
     message = error.message

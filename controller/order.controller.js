@@ -533,7 +533,7 @@ const persistVerifiedOrder = async ({
     emailsSent: _ignoreEmails,
     refund: _ignoreRefund,
     cancellation: _ignoreCancel,
-    ...safePayload
+    ...restPayload
   } = orderPayload || {};
 
   let extraReserved = null;
@@ -541,6 +541,15 @@ const persistVerifiedOrder = async ({
 
   try {
     const hold = await getHold(razorpay_order_id);
+    const draft = hold?.orderDraft || {};
+    const safePayload = {
+      ...draft,
+      ...restPayload,
+      cart:
+        Array.isArray(restPayload.cart) && restPayload.cart.length
+          ? restPayload.cart
+          : draft.cart || [],
+    };
     inventoryReserved =
       hold?.status === "held" || hold?.status === "committed";
 

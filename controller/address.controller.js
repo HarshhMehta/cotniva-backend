@@ -2,6 +2,15 @@ const User = require("../model/User");
 
 const MAX_ADDRESSES = 12;
 
+const normalizePhone = (raw = "") => {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("91") && d.length >= 12) d = d.slice(-10);
+  else if (d.startsWith("0") && d.length >= 11) d = d.replace(/^0+/, "");
+  else if (d.length > 10) d = d.slice(-10);
+  if (d.startsWith("0") && d.length === 10) d = d.slice(1);
+  return d.slice(0, 10);
+};
+
 const normalize = (raw = {}) => ({
   firstName: String(raw.firstName || "").trim(),
   lastName: String(raw.lastName || "").trim(),
@@ -9,7 +18,7 @@ const normalize = (raw = {}) => ({
   city: String(raw.city || "").trim(),
   zipCode: String(raw.zipCode || "").replace(/\D/g, "").slice(0, 6),
   country: String(raw.country || "India").trim() || "India",
-  contactNo: String(raw.contactNo || "").replace(/\D/g, "").slice(-10),
+  contactNo: normalizePhone(raw.contactNo),
   email: String(raw.email || "").trim().toLowerCase(),
   label: String(raw.label || "").trim(),
   orderNote: String(raw.orderNote || "").trim(),

@@ -102,6 +102,31 @@ module.exports.getOrderByUser = async (req, res,next) => {
   }
 };
 
+module.exports.getOrderByRazorpayOrderId = async (req, res, next) => {
+  try {
+    const razorpayOrderId = String(req.params.razorpayOrderId || "").trim();
+    if (!razorpayOrderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing Razorpay order id",
+      });
+    }
+    const order = await Order.findOne({
+      user: req.user._id,
+      "paymentIntent.razorpay_order_id": razorpayOrderId,
+    });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found yet",
+      });
+    }
+    res.status(200).json({ success: true, order });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // getOrderById
 module.exports.getOrderById = async (req, res,next) => {
   try {

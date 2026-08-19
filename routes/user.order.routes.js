@@ -16,6 +16,13 @@ router.get('/most-selling-category', userOrderController.mostSellingCategory);
 // get sales-report
 router.get('/dashboard-recent-order', userOrderController.getDashboardRecentOrder);
 
+// lookup after Razorpay redirect (must be before /:id)
+router.get(
+  '/by-razorpay/:razorpayOrderId',
+  verifyToken,
+  userOrderController.getOrderByRazorpayOrderId
+);
+
 //get a order by id
 router.get('/:id', userOrderController.getOrderById);
 
