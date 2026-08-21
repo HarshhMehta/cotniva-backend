@@ -23,6 +23,7 @@ const adminRoutes = require("./routes/admin.routes");
 const cloudinaryRoutes = require("./routes/cloudinary.routes");
 const sliderRoutes = require("./routes/slider.routes");
 const topbarRoutes = require("./routes/topbar.routes");
+const welcomePopupRoutes = require("./routes/welcome-popup.routes");
 const storeSettingsRoutes = require("./routes/store-settings.routes");
 const galleryRoutes = require("./routes/gallery.routes");
 const whatsappRoutes = require("./routes/whatsapp.routes");
@@ -66,7 +67,8 @@ app.post(
   express.raw({ type: "application/json" }),
   razorpayWebhook
 );
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
 app.use(express.static(path.join(__dirname, "public")));
@@ -84,6 +86,7 @@ app.use("/api/cloudinary", cloudinaryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/slider", sliderRoutes);
 app.use("/api/topbar", topbarRoutes);
+app.use("/api/welcome-popup", welcomePopupRoutes);
 app.use("/api/store-settings", storeSettingsRoutes);
 app.use("/api/gallery", galleryRoutes);
 app.use("/api/whatsapp", whatsappRoutes);

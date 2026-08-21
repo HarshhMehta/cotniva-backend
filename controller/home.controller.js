@@ -1,4 +1,4 @@
-const TopBar = require("../model/TopBar");
+const { ensureTopBar, toPublicTopBar } = require("./topbar.controller");
 const Slider = require("../model/Slider");
 const Gallery = require("../model/Gallery");
 const Category = require("../model/Category");
@@ -8,11 +8,8 @@ const PRODUCT_CARD_FIELDS =
   "title discount price status tags imageURLs sellCount newArrival createdAt sizes sizeInventory quantity sizeGuide";
 
 async function getTopBarData() {
-  let topbar = await TopBar.findOne().lean();
-  if (!topbar) {
-    topbar = (await TopBar.create({})).toObject();
-  }
-  return topbar;
+  const topbar = await ensureTopBar();
+  return toPublicTopBar(topbar);
 }
 
 async function getSlimNewArrivals() {
