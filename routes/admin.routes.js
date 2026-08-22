@@ -1,8 +1,11 @@
 const express = require("express");
-const router = express.Router();
 const {
   registerAdmin,
   loginAdmin,
+  logoutAdmin,
+  meAdmin,
+  refreshAdminSession,
+  bootstrapStatus,
   updateStaff,
   changePassword,
   addStaff,
@@ -10,41 +13,28 @@ const {
   deleteStaff,
   getStaffById,
   forgetPassword,
-  confirmAdminEmail,
   confirmAdminForgetPass,
 } = require("../controller/admin.controller");
+const { requireAdmin } = require("../config/auth");
 
-//register a staff
-router.post("/register", registerAdmin);
+const router = express.Router();
 
-//login a admin
+router.get("/bootstrap-status", bootstrapStatus);
+
 router.post("/login", loginAdmin);
-
-//login a admin
-router.patch("/change-password", changePassword);
-
-//login a admin
-router.post("/add", addStaff);
-
-//login a admin
-router.get("/all", getAllStaff);
-
-//forget-password
+router.post("/logout", logoutAdmin);
+router.get("/me", requireAdmin, meAdmin);
+router.post("/refresh", refreshAdminSession);
 router.patch("/forget-password", forgetPassword);
-
-//forget-password
 router.patch("/confirm-forget-password", confirmAdminForgetPass);
 
-//get a staff
-router.get("/get/:id", getStaffById);
+router.post("/register", registerAdmin);
 
-// update a staff
-router.patch("/update-stuff/:id", updateStaff);
-
-//update staf status
-// router.put("/update-status/:id", updatedStatus);
-
-//delete a staff
-router.delete("/:id", deleteStaff);
+router.post("/add", requireAdmin, addStaff);
+router.get("/all", requireAdmin, getAllStaff);
+router.get("/get/:id", requireAdmin, getStaffById);
+router.patch("/update-stuff/:id", requireAdmin, updateStaff);
+router.delete("/:id", requireAdmin, deleteStaff);
+router.patch("/change-password", requireAdmin, changePassword);
 
 module.exports = router;

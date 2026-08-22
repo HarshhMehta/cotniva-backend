@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { ObjectId } = mongoose.Schema.Types;
 
 const couponSchema = new mongoose.Schema(
   {
@@ -8,7 +9,8 @@ const couponSchema = new mongoose.Schema(
     },
     logo: {
       type: String,
-      required: true,
+      required: false,
+      default: "",
     },
     couponCode: {
       type: String,
@@ -16,11 +18,16 @@ const couponSchema = new mongoose.Schema(
     },
     startTime: {
       type: Date,
-      required: false
+      required: false,
     },
     endTime: {
       type: Date,
-      required: true,
+      required: false,
+      default: null,
+    },
+    neverExpires: {
+      type: Boolean,
+      default: false,
     },
     discountPercentage: {
       type: Number,
@@ -30,14 +37,32 @@ const couponSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    /**
+     * Legacy field. New coupons use "all" when store-wide,
+     * or keep older productType values for backward compatibility.
+     */
     productType: {
       type: String,
-      required: true,
+      required: false,
+      default: "all",
+    },
+    /**
+     * Empty = applies to all products.
+     * Non-empty = discount only on products whose category.id is listed.
+     */
+    applicableCategories: {
+      type: [
+        {
+          type: ObjectId,
+          ref: "Category",
+        },
+      ],
+      default: [],
     },
     status: {
       type: String,
       enum: ["active", "inactive"],
-      default: "active"
+      default: "active",
     },
   },
   {

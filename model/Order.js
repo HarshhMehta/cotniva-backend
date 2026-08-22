@@ -115,6 +115,7 @@ const orderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index(
   { "paymentIntent.razorpay_payment_id": 1 },
   { unique: true, sparse: true }

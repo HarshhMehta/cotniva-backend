@@ -2,19 +2,13 @@ const express = require('express');
 const router = express.Router();
 const userOrderController = require('../controller/user.order.controller');
 const verifyToken = require('../middleware/verifyToken');
+const { requireAdmin } = require('../config/auth');
 
-
-// get dashboard amount
-router.get('/dashboard-amount', userOrderController.getDashboardAmount);
-
-// get sales-report
-router.get('/sales-report', userOrderController.getSalesReport);
-
-// get sales-report
-router.get('/most-selling-category', userOrderController.mostSellingCategory);
-
-// get sales-report
-router.get('/dashboard-recent-order', userOrderController.getDashboardRecentOrder);
+// Admin dashboards
+router.get('/dashboard-amount', requireAdmin, userOrderController.getDashboardAmount);
+router.get('/sales-report', requireAdmin, userOrderController.getSalesReport);
+router.get('/most-selling-category', requireAdmin, userOrderController.mostSellingCategory);
+router.get('/dashboard-recent-order', requireAdmin, userOrderController.getDashboardRecentOrder);
 
 // lookup after Razorpay redirect (must be before /:id)
 router.get(
@@ -23,10 +17,10 @@ router.get(
   userOrderController.getOrderByRazorpayOrderId
 );
 
-//get a order by id
-router.get('/:id', userOrderController.getOrderById);
+//get a order by id (owner only)
+router.get('/:id', verifyToken, userOrderController.getOrderById);
 
 //get all order by a user
-router.get('/',verifyToken, userOrderController.getOrderByUser);
+router.get('/', verifyToken, userOrderController.getOrderByUser);
 
 module.exports = router;

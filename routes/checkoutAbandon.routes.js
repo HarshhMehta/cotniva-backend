@@ -4,11 +4,9 @@ const {
   createAbandonFeedback,
   listAbandonFeedback,
 } = require("../controller/checkoutAbandon.controller");
+const { requireAdmin } = require("../config/auth");
 
-// Public — storefront submits exit survey
 router.post("/", createAbandonFeedback);
-
-// Admin list (same pattern as other list endpoints — token via admin panel)
-router.get("/", listAbandonFeedback);
+router.get("/", requireAdmin, listAbandonFeedback);
 
 module.exports = router;

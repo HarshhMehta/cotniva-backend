@@ -33,6 +33,8 @@ exports.addAllCategory = async (req,res,next) => {
 exports.getShowCategory = async (req,res,next) => {
   try {
     const result = await categoryServices.getShowCategoryServices();
+    const { setPublicCache, PUBLIC_LISTING_CACHE } = require("../utils/public-cache");
+    setPublicCache(res, PUBLIC_LISTING_CACHE);
     res.status(200).json({
       success:true,
       result,

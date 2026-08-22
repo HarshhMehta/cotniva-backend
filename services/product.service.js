@@ -85,12 +85,20 @@ exports.addAllProductService = async (data) => {
   return products;
 };
 
-// get product data
-exports.getAllProductsService = async () => {
-  const products = await Product.find({})
-    .populate("reviews")
-    .sort({ createdAt: -1 }); // -1 = DESC, 1 = ASC
-  return products;
+// get product data — slim listing (paginated when ?page= is set)
+exports.getAllProductsService = async (query = {}, options = {}) => {
+  const { listProducts } = require("./product-listing.service");
+  return listProducts(query, options);
+};
+
+exports.getProductFacetsService = async () => {
+  const { getProductFacets } = require("./product-listing.service");
+  return getProductFacets();
+};
+
+exports.checkStockService = async (items) => {
+  const { checkStockForItems } = require("./product-listing.service");
+  return checkStockForItems(items);
 };
 
 

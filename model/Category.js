@@ -37,5 +37,8 @@ const CategorySchema = mongoose.Schema({
   timestamps: true
 })
 
+CategorySchema.index({ status: 1, parent: 1 });
+CategorySchema.index({ productType: 1, status: 1 });
+
 const Category = mongoose.model('Category',CategorySchema);
 module.exports = Category;

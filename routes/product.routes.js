@@ -1,35 +1,24 @@
 const express = require('express');
 const router = express.Router();
-// internal
 const productController = require('../controller/product.controller');
+const { requireAdmin } = require('../config/auth');
 
-// add a product
-router.post('/add', productController.addProduct);
-// add all product
-router.post('/add-all', productController.addAllProducts);
-// get all products
+router.post('/add', requireAdmin, productController.addProduct);
+router.post('/add-all', requireAdmin, productController.addAllProducts);
+router.post('/check-stock', productController.checkProductStock);
+router.get('/facets', productController.getProductFacets);
 router.get('/all', productController.getAllProducts);
-// get offer timer product
 router.get('/offer', productController.getOfferTimerProducts);
 router.get('/new-arrival', productController.getNewArrivalProducts);
 router.get('/best-seller', productController.getBestSellerProducts);
-// top rated products
 router.get('/top-rated', productController.getTopRatedProducts);
-// reviews products
 router.get('/review-product', productController.reviewProducts);
-// get popular products by type
 router.get('/popular/:type', productController.getPopularProductByType);
-// get Related Products
 router.get('/related-product/:id', productController.getRelatedProducts);
-// get Single Product
 router.get("/single-product/:id", productController.getSingleProduct);
-// stock Product
-router.get("/stock-out", productController.stockOutProducts);
-// get Single Product
-router.patch("/edit-product/:id", productController.updateProduct);
-// get Products ByType
+router.get("/stock-out", requireAdmin, productController.stockOutProducts);
+router.patch("/edit-product/:id", requireAdmin, productController.updateProduct);
 router.get('/:type', productController.getProductsByType);
-// get Products ByType 
-router.delete('/:id', productController.deleteProduct);
+router.delete('/:id', requireAdmin, productController.deleteProduct);
 
 module.exports = router;

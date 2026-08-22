@@ -1,5 +1,7 @@
 require("dotenv").config();
+const http = require("http");
 const express = require("express");
+const compression = require("compression");
 const app = express();
 const path = require("path");
 const cors = require("cors");
@@ -45,6 +47,16 @@ const {
 app.set("trust proxy", 1);
 
 app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
+    threshold: 1024,
+  })
+);
+
+app.use(
   cors({
     origin(origin, cb) {
       // Same-origin / server-to-server / mobile tools
@@ -67,6 +79,29 @@ app.post(
   express.raw({ type: "application/json" }),
   razorpayWebhook
 );
+// GitHub deploy webhook — must stay BEFORE express.json() so raw body is forwarded
+app.post("/deploy-hook", (req, res) => {
+  const proxyReq = http.request(
+    {
+      hostname: "localhost",
+      port: 4001,
+      path: "/deploy-hook",
+      method: "POST",
+      headers: req.headers,
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.on("error", (err) => {
+    console.error("Deploy proxy error:", err.message);
+    res.status(502).send("Deploy service unavailable");
+  });
+
+  req.pipe(proxyReq);
+});
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());

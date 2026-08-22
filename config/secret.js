@@ -32,4 +32,6 @@ module.exports.secret = {
   admin_url:process.env.ADMIN_URL,
   /** Google Identity Services — ID token audience (never put client secret on frontend) */
   google_client_id: process.env.GOOGLE_CLIENT_ID || "",
+  /** One-time first-admin bootstrap — backend only, never expose to frontend bundle */
+  admin_bootstrap_secret: process.env.ADMIN_BOOTSTRAP_SECRET || "",
 }

@@ -1,16 +1,14 @@
 const StoreSettings = require('../model/StoreSettings');
-
-const defaults = {
-  deliveryCharge: 100,
-  freeShippingAbove: 1299,
-};
+const {
+  getStoreSettingsDocument,
+  invalidateStoreSettingsCache,
+} = require('../services/store-settings-cache.service');
+const { setPublicCache, PUBLIC_SETTINGS_CACHE } = require('../utils/public-cache');
 
 exports.getStoreSettings = async (req, res, next) => {
   try {
-    let settings = await StoreSettings.findOne();
-    if (!settings) {
-      settings = await StoreSettings.create(defaults);
-    }
+    const settings = await getStoreSettingsDocument();
+    setPublicCache(res, PUBLIC_SETTINGS_CACHE);
     res.status(200).json({ success: true, data: settings });
   } catch (error) {
     next(error);
@@ -47,7 +45,15 @@ exports.updateStoreSettings = async (req, res, next) => {
       await settings.save();
     }
 
-    res.status(200).json({ success: true, data: settings });
+    invalidateStoreSettingsCache();
+
+    res.status(200).json({
+      success: true,
+      data:
+        typeof settings.toObject === 'function'
+          ? settings.toObject()
+          : settings,
+    });
   } catch (error) {
     next(error);
   }

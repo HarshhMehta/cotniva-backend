@@ -50,10 +50,24 @@ async function getSlimBestSellers() {
 }
 
 async function getSlimCategories(type = "beauty") {
-  // No populate — products stay as ObjectIds; homepage only needs .length
-  return Category.find({ productType: type })
-    .select("parent img products productType status")
+  // Match /api/category/show — visible categories only (not productType-only filter)
+  const baseQuery = { status: "Show" };
+  const fields = "parent img children products productType status";
+
+  let categories = await Category.find(baseQuery)
+    .select(fields)
+    .sort({ parent: 1 })
     .lean();
+
+  // Legacy: when type is passed and categories carry productType, prefer that subset
+  if (type && categories.some((c) => c.productType)) {
+    const typed = categories.filter(
+      (c) => String(c.productType || "").toLowerCase() === String(type).toLowerCase()
+    );
+    if (typed.length > 0) categories = typed;
+  }
+
+  return categories;
 }
 
 /**

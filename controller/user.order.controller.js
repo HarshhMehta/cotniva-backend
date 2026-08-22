@@ -128,15 +128,29 @@ module.exports.getOrderByRazorpayOrderId = async (req, res, next) => {
 };
 
 // getOrderById
-module.exports.getOrderById = async (req, res,next) => {
+module.exports.getOrderById = async (req, res, next) => {
   try {
     const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+    const ownerId = String(order.user || "");
+    const actorId = String(req.user?._id || req.user?.id || "");
+    if (!actorId || !ownerId || ownerId !== actorId) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have access to this order",
+      });
+    }
     res.status(200).json({
       success: true,
       order,
     });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
 

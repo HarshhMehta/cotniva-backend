@@ -12,6 +12,8 @@ const ensurePopup = async () => {
 exports.getWelcomePopup = async (req, res, next) => {
   try {
     const doc = await ensurePopup();
+    const { setPublicCache, PUBLIC_SETTINGS_CACHE } = require('../utils/public-cache');
+    setPublicCache(res, PUBLIC_SETTINGS_CACHE);
     res.status(200).json({ success: true, data: doc });
   } catch (error) {
     next(error);
