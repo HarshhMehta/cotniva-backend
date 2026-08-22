@@ -8,23 +8,13 @@ const {
   updateCoupon,
   deleteCoupon,
 } = require('../controller/coupon.controller');
+const { requireAdmin } = require('../config/auth');
 
-//add a coupon
-router.post('/add', addCoupon);
-
-//add multiple coupon
-router.post('/all', addAllCoupon);
-
-//get all coupon
+router.post('/add', requireAdmin, addCoupon);
+router.post('/all', requireAdmin, addAllCoupon);
 router.get('/', getAllCoupons);
-
-//get a coupon
 router.get('/:id', getCouponById);
-
-//update a coupon
-router.patch('/:id', updateCoupon);
-
-//delete a coupon
-router.delete('/:id', deleteCoupon);
+router.patch('/:id', requireAdmin, updateCoupon);
+router.delete('/:id', requireAdmin, deleteCoupon);
 
 module.exports = router;

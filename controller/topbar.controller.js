@@ -58,6 +58,8 @@ const ensureTopBar = async () => {
 exports.getTopBar = async (req, res, next) => {
   try {
     const topbar = await ensureTopBar();
+    const { setPublicCache, PUBLIC_SETTINGS_CACHE } = require('../utils/public-cache');
+    setPublicCache(res, PUBLIC_SETTINGS_CACHE);
     res.status(200).json({ success: true, data: toPublic(topbar) });
   } catch (error) {
     next(error);

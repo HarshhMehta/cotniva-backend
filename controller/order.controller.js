@@ -31,37 +31,17 @@ const {
   markPaymentAttemptOrderCreated,
   applyRazorpayRefundWebhook,
 } = require("../services/razorpay-refund.service");
-const StoreSettings = require("../model/StoreSettings");
+const {
+  buildTrustedCheckout,
+  getStoreShippingSettings,
+  resolveShippingCostRupees,
+  toPaise,
+} = require("../services/checkout-pricing.service");
+const { USER_POPULATE_SAFE } = require("../utils/sanitize-user");
 
 const STORE_DEFAULTS = {
   deliveryCharge: 100,
   freeShippingAbove: 1299,
-};
-
-const getStoreShippingSettings = async () => {
-  try {
-    const settings = await StoreSettings.findOne().lean();
-    return {
-      deliveryCharge:
-        settings?.deliveryCharge != null
-          ? Number(settings.deliveryCharge)
-          : STORE_DEFAULTS.deliveryCharge,
-      freeShippingAbove:
-        settings?.freeShippingAbove != null
-          ? Number(settings.freeShippingAbove)
-          : STORE_DEFAULTS.freeShippingAbove,
-    };
-  } catch {
-    return { ...STORE_DEFAULTS };
-  }
-};
-
-const resolveShippingCostRupees = (subTotalRupees, settings) => {
-  const charge = Math.max(0, Number(settings?.deliveryCharge) || 0);
-  const threshold = Math.max(0, Number(settings?.freeShippingAbove) || 0);
-  const total = Math.max(0, Number(subTotalRupees) || 0);
-  if (threshold > 0 && total >= threshold) return 0;
-  return charge;
 };
 
 const getRazorpay = () => {
@@ -73,8 +53,6 @@ const getRazorpay = () => {
     key_secret: secret.razorpay_key_secret,
   });
 };
-
-const toPaise = (amount) => Math.round(Number(amount || 0) * 100);
 
 const isBlank = (v) =>
   v == null ||
@@ -175,6 +153,7 @@ const fetchRazorpayShipping = async (razorpay, orderId, { tries = 4, delayMs = 8
 
 const buildLineItems = (cart = []) =>
   (cart || []).map((item, index) => {
+    // Legacy helper — Magic Checkout uses buildTrustedCheckout instead.
     const price = Number(item.price) || 0;
     const discount = Number(item.discount) || 0;
     const offer =
@@ -221,67 +200,57 @@ exports.createRazorpayOrder = async (req, res) => {
 };
 
 /**
- * Magic Checkout order — requires line_items + line_items_total.
- * Body: { cart, amount?, currency?, receipt?, notes?, shippingCost? }
- * Shipping is resolved from store settings (client shippingCost is ignored for payable).
- * amount = items total + shipping - discount (final payable). If omitted, computed from cart.
+ * Magic Checkout — prices, coupon discount, shipping, and payable are
+ * computed server-side from MongoDB. Client cart prices / discount / amount
+ * / shippingCost are ignored.
  */
 exports.createMagicCheckoutOrder = async (req, res, next) => {
   try {
     const {
       cart = [],
-      amount,
       currency = "INR",
       receipt,
       notes,
-      discount = 0,
       shipping,
+      couponCode,
     } = req.body || {};
 
-    if (!Array.isArray(cart) || cart.length === 0) {
-      return res.status(400).json({
+    let priced;
+    try {
+      priced = await buildTrustedCheckout({
+        cart,
+        couponCode:
+          couponCode ||
+          notes?.couponCode ||
+          req.body?.coupon?.couponCode ||
+          "",
+      });
+    } catch (priceErr) {
+      const status = priceErr.statusCode || 400;
+      return res.status(status).json({
         success: false,
-        message: "Cart is required for Magic Checkout",
+        message: priceErr.message || "Invalid checkout",
+        code: priceErr.code || "PRICING_ERROR",
       });
     }
 
-    const lineItems = buildLineItems(cart).map((li) => {
-      // image_url required by Magic if showing images — drop if missing
-      if (!li.image_url) delete li.image_url;
-      if (!li.product_url) delete li.product_url;
-      return li;
-    });
-
-    const lineItemsTotal = lineItems.reduce(
-      (sum, li) => sum + Number(li.offer_price) * Number(li.quantity),
-      0
-    );
-
-    const storeShip = await getStoreShippingSettings();
-    const subTotalRupees = lineItemsTotal / 100;
-    const shippingCost = resolveShippingCostRupees(subTotalRupees, storeShip);
-    const discountPaise = toPaise(discount);
-    const shippingPaise = toPaise(shippingCost);
-    const computedPayable = Math.max(
-      0,
-      lineItemsTotal - discountPaise + shippingPaise
-    );
-    // Prefer server-computed payable so Buy Now / checkout cannot omit delivery
-    const payable =
-      amount != null && Math.abs(toPaise(amount) - computedPayable) <= 1
-        ? toPaise(amount)
-        : computedPayable;
-
-    if (!payable || payable < 100) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid Magic Checkout amount",
-      });
-    }
+    const {
+      trustedCart,
+      lineItems,
+      lineItemsTotalPaise,
+      subTotalRupees,
+      shippingCost,
+      discountRupees,
+      discountPaise,
+      shippingPaise,
+      payablePaise,
+      storeShip,
+      couponCode: appliedCode,
+    } = priced;
 
     let reserved = [];
     try {
-      reserved = await reserveCartStock(cart);
+      reserved = await reserveCartStock(trustedCart);
     } catch (stockErr) {
       const status = stockErr.statusCode || 500;
       if (status === 409 || status === 400) {
@@ -298,18 +267,19 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
     let order;
     try {
       order = await razorpay.orders.create({
-        amount: payable,
+        amount: payablePaise,
         currency,
         receipt: String(receipt || `magic_${Date.now()}`).slice(0, 40),
-        line_items_total: lineItemsTotal,
+        line_items_total: lineItemsTotalPaise,
         line_items: lineItems,
         notes: {
-          ...(notes || {}),
+          ...(notes && typeof notes === "object" ? notes : {}),
           source: "magic_checkout",
           discount_paise: String(discountPaise),
           shipping_paise: String(shippingPaise),
           delivery_charge: String(storeShip.deliveryCharge),
           free_shipping_above: String(storeShip.freeShippingAbove),
+          coupon_code: appliedCode || "",
           stock_reserved: "1",
         },
       });
@@ -321,7 +291,7 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
     const releaseToken = newReleaseToken();
     const ship = shipping && typeof shipping === "object" ? shipping : {};
     const orderDraft = {
-      cart,
+      cart: trustedCart,
       user: notes?.userId || ship.user || null,
       name: ship.name || "",
       address: ship.address || "",
@@ -333,8 +303,9 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       orderNote: ship.orderNote || "",
       subTotal: subTotalRupees,
       shippingCost: Number(shippingCost) || 0,
-      discount: Number(discount) || 0,
-      totalAmount: payable / 100,
+      discount: Number(discountRupees) || 0,
+      couponCode: appliedCode || "",
+      totalAmount: payablePaise / 100,
       paymentMethod: "Razorpay",
     };
 
@@ -354,10 +325,14 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       key: secret.razorpay_key_id,
       order,
       releaseToken,
-      line_items_total: lineItemsTotal,
+      line_items_total: lineItemsTotalPaise,
+      subTotal: subTotalRupees,
       shippingCost: Number(shippingCost) || 0,
+      discount: Number(discountRupees) || 0,
+      totalAmount: payablePaise / 100,
       deliveryCharge: storeShip.deliveryCharge,
       freeShippingAbove: storeShip.freeShippingAbove,
+      couponCode: appliedCode || "",
     });
   } catch (error) {
     console.log(error);
@@ -533,6 +508,12 @@ const persistVerifiedOrder = async ({
     emailsSent: _ignoreEmails,
     refund: _ignoreRefund,
     cancellation: _ignoreCancel,
+    subTotal: _ignoreSub,
+    shippingCost: _ignoreShip,
+    discount: _ignoreDisc,
+    totalAmount: _ignoreTotal,
+    couponCode: _ignoreCoupon,
+    cart: _ignoreCart,
     ...restPayload
   } = orderPayload || {};
 
@@ -541,14 +522,80 @@ const persistVerifiedOrder = async ({
 
   try {
     const hold = await getHold(razorpay_order_id);
-    const draft = hold?.orderDraft || {};
+    let draft = { ...(hold?.orderDraft || {}) };
+
+    // Money + cart must come from the hold created at Magic Checkout (server-priced).
+    // Client may only supply address / contact fields.
+    let trustedCart =
+      Array.isArray(draft.cart) && draft.cart.length ? draft.cart : [];
+
+    if (!trustedCart.length) {
+      // Rare: hold expired — reprice from client product ids only (never client prices)
+      try {
+        const rebuilt = await buildTrustedCheckout({
+          cart: Array.isArray(orderPayload?.cart) ? orderPayload.cart : [],
+          couponCode: orderPayload?.couponCode || "",
+        });
+        trustedCart = rebuilt.trustedCart;
+        draft.cart = rebuilt.trustedCart;
+        draft.subTotal = rebuilt.subTotalRupees;
+        draft.shippingCost = rebuilt.shippingCost;
+        draft.discount = rebuilt.discountRupees;
+        draft.totalAmount = rebuilt.payablePaise / 100;
+        draft.couponCode = rebuilt.couponCode;
+      } catch (repriceErr) {
+        const err = new Error(
+          repriceErr.message || "Could not rebuild trusted cart for this payment"
+        );
+        err.statusCode = repriceErr.statusCode || 400;
+        err.code = repriceErr.code || "PRICING_ERROR";
+        throw err;
+      }
+    }
+
+    // Verify Razorpay order amount matches server draft
+    try {
+      const razorpay = getRazorpay();
+      const rzpOrderCheck = await razorpay.orders.fetch(razorpay_order_id);
+      const expectedPaise = toPaise(draft.totalAmount);
+      if (
+        expectedPaise > 0 &&
+        Math.abs(Number(rzpOrderCheck.amount) - expectedPaise) > 1
+      ) {
+        const err = new Error(
+          "Payment amount does not match the checkout total. Contact support if you were charged."
+        );
+        err.statusCode = 400;
+        err.code = "AMOUNT_MISMATCH";
+        throw err;
+      }
+    } catch (amtErr) {
+      if (amtErr.code === "AMOUNT_MISMATCH") throw amtErr;
+      // If fetch fails, continue — signature already verified; webhook may complete
+      console.log(
+        "[persistVerifiedOrder] amount check skipped:",
+        amtErr.message
+      );
+    }
+
     const safePayload = {
       ...draft,
-      ...restPayload,
-      cart:
-        Array.isArray(restPayload.cart) && restPayload.cart.length
-          ? restPayload.cart
-          : draft.cart || [],
+      name: restPayload.name || draft.name || "",
+      address: restPayload.address || draft.address || "",
+      city: restPayload.city || draft.city || "",
+      zipCode: restPayload.zipCode || draft.zipCode || "",
+      country: restPayload.country || draft.country || "India",
+      contact: restPayload.contact || draft.contact || "",
+      email: restPayload.email || draft.email || "",
+      orderNote: restPayload.orderNote || draft.orderNote || "",
+      user: draft.user || restPayload.user || null,
+      cart: trustedCart,
+      subTotal: Number(draft.subTotal) || 0,
+      shippingCost: Number(draft.shippingCost) || 0,
+      discount: Number(draft.discount) || 0,
+      totalAmount: Number(draft.totalAmount) || 0,
+      couponCode: draft.couponCode || "",
+      paymentMethod: "Razorpay",
     };
     inventoryReserved =
       hold?.status === "held" || hold?.status === "committed";
@@ -1085,7 +1132,7 @@ exports.syncRazorpayAddress = async (req, res, next) => {
     };
 
     await order.save();
-    const populated = await Order.findById(order._id).populate("user");
+    const populated = await Order.findById(order._id).populate(USER_POPULATE_SAFE);
 
     res.status(200).json({
       success: true,
@@ -1192,7 +1239,7 @@ exports.addOrder = async (req, res) => {
 
 exports.getOrders = async (req, res, next) => {
   try {
-    const orderItems = await Order.find({}).populate("user");
+    const orderItems = await Order.find({}).populate(USER_POPULATE_SAFE);
     res.status(200).json({
       success: true,
       data: orderItems,
@@ -1209,7 +1256,7 @@ exports.getSingleOrder = async (req, res, next) => {
       getAllowedNextStatuses,
       canEmergencyCancel,
     } = require("../services/order-status.service");
-    const orderItem = await Order.findById(req.params.id).populate("user");
+    const orderItem = await Order.findById(req.params.id).populate(USER_POPULATE_SAFE);
     if (!orderItem) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
@@ -1386,7 +1433,7 @@ exports.updateAdminNotes = async (req, res, next) => {
       req.params.id,
       { $set: { adminNotes: String(notes) } },
       { new: true }
-    ).populate("user");
+    ).populate(USER_POPULATE_SAFE);
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }

@@ -12,7 +12,7 @@
     "start-dev": "nodemon index.js",
     "data:import": "node seed.js",
     "data:dummy": "node seed-dummy-products.js",
-    "test": "node tests/inventory.e2e.test.js && node tests/refund-safety.test.js && node tests/review-safety.test.js && node tests/newsletter-safety.test.js"
+    "test": "node tests/inventory.e2e.test.js && node tests/refund-safety.test.js && node tests/review-safety.test.js && node tests/newsletter-safety.test.js && node tests/checkout-pricing.test.js && node tests/password-reset-token.test.js && node tests/admin-session.test.js && node tests/admin-bootstrap.test.js && node tests/product-listing.test.js"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +21,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.37.0",
+    "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dayjs": "^1.11.7",

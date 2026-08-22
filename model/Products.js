@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 const { ObjectId } = mongoose.Schema.Types;
 // schema design
 const validator = require("validator");
@@ -31,6 +31,11 @@ const productsSchema = mongoose.Schema({
       validate: [validator.isURL, "Please provide valid url(s)"]
     },
     isDefault: {
+      type: Boolean,
+      default: false
+    },
+    /** Storefront card hover image; if none set, UI falls back to second gallery image */
+    isHover: {
       type: Boolean,
       default: false
     },
@@ -207,6 +212,18 @@ const productsSchema = mongoose.Schema({
 }, {
   timestamps: true,
 })
+
+productsSchema.index({ slug: 1 });
+productsSchema.index({ status: 1, createdAt: -1 });
+productsSchema.index({ productType: 1, createdAt: -1 });
+productsSchema.index({ featured: -1, bestSeller: -1, createdAt: -1 });
+productsSchema.index({ newArrival: 1, createdAt: -1 });
+productsSchema.index({ bestSeller: 1, sellCount: -1 });
+productsSchema.index({ sellCount: -1 });
+productsSchema.index({ "category.id": 1, status: 1 });
+productsSchema.index({ productType: 1, "offerDate.endDate": 1 });
+productsSchema.index({ parent: 1 });
+productsSchema.index({ title: "text", parent: "text", children: "text", tags: "text" });
 
 productsSchema.pre("validate", function (next) {
   if (!Array.isArray(this.sizeInventory)) {

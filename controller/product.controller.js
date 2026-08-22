@@ -67,15 +67,60 @@ module.exports.addAllProducts = async (req,res,next) => {
 // get all products
 exports.getAllProducts = async (req,res,next) => {
   try {
-    const result = await productServices.getAllProductsService();
-    res.status(200).json({
-      success:true,
-      data:result,
-    })
+    const { verifyAdminAccessRequest } = require("../services/admin-session.service");
+    const isAdmin = await verifyAdminAccessRequest(req);
+    const wantsPaginate =
+      req.query.page != null ||
+      req.query.limit != null ||
+      String(req.query.paginate || "").toLowerCase() === "true";
+
+    const { products, pagination } = await productServices.getAllProductsService(
+      req.query,
+      { forcePaginate: !isAdmin && !wantsPaginate }
+    );
+    const payload = {
+      success: true,
+      data: products,
+    };
+    if (pagination) {
+      payload.pagination = pagination;
+    }
+    const { setPublicCache, PUBLIC_LISTING_CACHE } = require("../utils/public-cache");
+    setPublicCache(res, PUBLIC_LISTING_CACHE);
+    res.status(200).json(payload);
   } catch (error) {
     next(error)
   }
 }
+
+exports.getProductFacets = async (req, res, next) => {
+  try {
+    const facets = await productServices.getProductFacetsService();
+    const { setPublicCache, PUBLIC_LISTING_CACHE } = require("../utils/public-cache");
+    setPublicCache(res, PUBLIC_LISTING_CACHE);
+    res.status(200).json({ success: true, data: facets });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.checkProductStock = async (req, res, next) => {
+  try {
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "items array is required",
+      });
+    }
+    const { setPrivateNoStore } = require("../utils/public-cache");
+    setPrivateNoStore(res);
+    const result = await productServices.checkStockService(items);
+    res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // get all products by type
 module.exports.getProductsByType = async (req,res,next) => {

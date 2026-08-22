@@ -6,13 +6,15 @@ const {
   syncCartActivity,
   updateCustomerStatus,
 } = require("../controller/customer.controller");
+const { requireAdmin } = require("../config/auth");
+const verifyToken = require("../middleware/verifyToken");
 
 const router = express.Router();
 
-router.get("/", getCustomers);
-router.post("/cart-activity", syncCartActivity);
-router.get("/:id", getCustomerById);
-router.get("/:id/activity", getCustomerActivity);
-router.patch("/:id/status", updateCustomerStatus);
+router.get("/", requireAdmin, getCustomers);
+router.post("/cart-activity", verifyToken, syncCartActivity);
+router.get("/:id", requireAdmin, getCustomerById);
+router.get("/:id/activity", requireAdmin, getCustomerActivity);
+router.patch("/:id/status", requireAdmin, updateCustomerStatus);
 
 module.exports = router;

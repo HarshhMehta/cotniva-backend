@@ -15,7 +15,7 @@ router.patch('/forget-password', userController.forgetPassword);
 // confirm-forget-password
 router.patch('/confirm-forget-password', userController.confirmForgetPassword);
 // change password
-router.patch('/change-password', userController.changePassword);
+router.patch('/change-password', verifyToken, userController.changePassword);
 // confirmEmail
 router.get('/confirmEmail/:token', userController.confirmEmail);
 // Saved addresses (logged-in user — cookie/Bearer)

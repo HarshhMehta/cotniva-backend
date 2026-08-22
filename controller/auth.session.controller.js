@@ -275,6 +275,8 @@ exports.me = async (req, res, next) => {
         message: "Your account has been blocked",
       });
     }
+    const { setPrivateNoStore } = require("../utils/public-cache");
+    setPrivateNoStore(res);
     res.status(200).json({
       success: true,
       data: { user: publicUser(user) },

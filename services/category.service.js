@@ -15,10 +15,16 @@ exports.addAllCategoryService = async (data) => {
   return category;
 }
 
-// get all show category service
+// get all show category service — metadata only (no product populate)
 exports.getShowCategoryServices = async () => {
-  const category = await Category.find({status:'Show'}).populate('products');
-  return category;
+  const categories = await Category.find({ status: "Show" })
+    .select("parent img children productType status products")
+    .sort({ parent: 1 })
+    .lean();
+  return categories.map((cat) => ({
+    ...cat,
+    productCount: Array.isArray(cat.products) ? cat.products.length : 0,
+  }));
 }
 
 // get all category 
@@ -27,10 +33,16 @@ exports.getAllCategoryServices = async () => {
   return category;
 }
 
-// get type of category service
+// get type of category service — no product populate
 exports.getCategoryTypeService = async (param) => {
-  const categories = await Category.find({productType:param}).populate('products');
-  return categories;
+  const categories = await Category.find({ productType: param })
+    .select("parent img children productType status products")
+    .sort({ parent: 1 })
+    .lean();
+  return categories.map((cat) => ({
+    ...cat,
+    productCount: Array.isArray(cat.products) ? cat.products.length : 0,
+  }));
 }
 
 // get type of category service

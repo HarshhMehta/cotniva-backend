@@ -1,8 +1,14 @@
+const { publicUser } = require("../utils/sanitize-user");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../model/User");
 const { sendEmail } = require("../config/email");
 const { generateToken, tokenForVerify } = require("../utils/token");
+const {
+  createPasswordResetFields,
+  findByPasswordResetToken,
+  clearPasswordResetFields,
+} = require("../utils/password-reset-token");
 const { secret } = require("../config/secret");
 const { trackCustomerActivity } = require("../services/customer-activity.service");
 const { issueSession } = require("../services/session.service");
@@ -15,7 +21,12 @@ exports.signup = async (req, res,next) => {
     if (user) {
       res.send({ status: "failed", message: "Email already exists" });
     } else {
-      const saved_user = await User.create(req.body);
+      const saved_user = await User.create({
+        name: req.body.name,
+        email: req.body.email,
+        password: req.body.password,
+        phone: req.body.phone,
+      });
       const token = saved_user.generateConfirmationToken();
 
       await saved_user.save({ validateBeforeSave: false });
@@ -171,7 +182,7 @@ exports.forgetPassword = async (req, res,next) => {
         message: "User Not found with this email!",
       });
     } else {
-      const token = tokenForVerify(user);
+      const reset = createPasswordResetFields();
       const body = {
         from: secret.email_user,
         to: `${verifyEmail}`,
@@ -183,7 +194,7 @@ exports.forgetPassword = async (req, res,next) => {
 
         <p style="margin-bottom:20px;">Click this link for reset your password</p>
 
-        <a href=${secret.client_url}/forget-password/${token} style="background:#0989FF;color:white;border:1px solid #0989FF; padding: 10px 15px; border-radius: 4px; text-decoration:none;">Reset Password</a>
+        <a href=${secret.client_url}/forget-password/${reset.rawToken} style="background:#0989FF;color:white;border:1px solid #0989FF; padding: 10px 15px; border-radius: 4px; text-decoration:none;">Reset Password</a>
 
         <p style="margin-top: 35px;">If you did not initiate this request, please contact us immediately at support@shofy.com</p>
 
@@ -191,10 +202,10 @@ exports.forgetPassword = async (req, res,next) => {
         <strong>Shofy Team</strong>
         `,
       };
-      user.confirmationToken = token;
-      const date = new Date();
-      date.setDate(date.getDate() + 1);
-      user.confirmationTokenExpires = date;
+      user.passwordResetToken = reset.passwordResetToken;
+      user.passwordResetExpires = reset.passwordResetExpires;
+      user.confirmationToken = undefined;
+      user.confirmationTokenExpires = undefined;
       await user.save({ validateBeforeSave: false });
       const message = "Please check your email to reset password!";
       sendEmail(body, res, message);
@@ -208,68 +219,70 @@ exports.forgetPassword = async (req, res,next) => {
 exports.confirmForgetPassword = async (req, res,next) => {
   try {
     const { token, password } = req.body;
-    const user = await User.findOne({ confirmationToken: token });
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({
+        status: "fail",
+        error: "Password must be at least 6 characters",
+      });
+    }
+
+    const user = await findByPasswordResetToken(User, token);
 
     if (!user) {
       return res.status(403).json({
         status: "fail",
-        error: "Invalid token",
+        error: "Invalid or expired token",
       });
     }
 
-    const expired = new Date() > new Date(user.confirmationTokenExpires);
+    user.password = bcrypt.hashSync(password);
+    clearPasswordResetFields(user);
+    await user.save({ validateBeforeSave: false });
 
-    if (expired) {
-      return res.status(401).json({
-        status: "fail",
-        error: "Token expired",
-      });
-    } else {
-      const newPassword = bcrypt.hashSync(password);
-      await User.updateOne(
-        { confirmationToken: token },
-        { $set: { password: newPassword } }
-      );
-
-      user.confirmationToken = undefined;
-      user.confirmationTokenExpires = undefined;
-
-      await user.save({ validateBeforeSave: false });
-
-      res.status(200).json({
-        status: "success",
-        message: "Password reset successfully",
-      });
-    }
+    return res.status(200).json({
+      status: "success",
+      message: "Password reset successfully",
+    });
   } catch (error) {
     next(error)
   }
 };
 
-// change password
-exports.changePassword = async (req, res,next) => {
+// change password — requires authenticated session; identity from token only
+exports.changePassword = async (req, res, next) => {
   try {
-    const {email,password,googleSignIn,newPassword} = req.body || {};
-    const user = await User.findOne({ email: email });
-    // Check if the user exists
+    const actorId = String(req.user?._id || req.user?.id || "");
+    if (!actorId) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    const { password, newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({
+        message: "New password must be at least 6 characters",
+      });
+    }
+
+    const user = await User.findById(actorId);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    if(googleSignIn){
-      const hashedPassword = bcrypt.hashSync(newPassword);
-      await User.updateOne({email:email},{password:hashedPassword})
-      return res.status(200).json({ message: "Password changed successfully" });
+
+    // Google-only accounts without a local password may set one once
+    const hasLocalPassword =
+      user.password && String(user.password).length > 0;
+
+    if (hasLocalPassword) {
+      if (!password || !bcrypt.compareSync(password, user.password)) {
+        return res.status(401).json({ message: "Incorrect current password" });
+      }
     }
-    if(!bcrypt.compareSync(password, user?.password)){
-      return res.status(401).json({ message: "Incorrect current password" });
-    }
-    else {
-      const hashedPassword = bcrypt.hashSync(newPassword);
-      await User.updateOne({email:email},{password:hashedPassword})
-      res.status(200).json({ message: "Password changed successfully" });
-    }
+
+    user.password = bcrypt.hashSync(newPassword);
+    await user.save({ validateBeforeSave: false });
+    return res.status(200).json({ message: "Password changed successfully" });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
 
@@ -363,7 +376,7 @@ exports.updateUser = async (req, res, next) => {
       status: "success",
       message: "Successfully updated profile",
       data: {
-        user: updatedUser,
+        user: publicUser(updatedUser),
         token,
       },
     });

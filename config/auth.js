@@ -20,13 +20,14 @@ const signInToken = (user) => {
   );
 };
 
+/** Email / account verification only — never embed password or password hash */
 const tokenForVerify = (user) => {
   return jwt.sign(
     {
       _id: user._id,
       name: user.name,
       email: user.email,
-      password: user.password,
+      purpose: "email_verify",
     },
     secret.jwt_secret_for_verify,
     { expiresIn: "10m" }
@@ -68,16 +69,14 @@ const isAdmin = async (req, res, next) => {
  * Require a valid JWT whose subject exists in the Admin collection.
  * Customer/user JWTs (same TOKEN_SECRET) receive 403.
  */
+const {
+  readAdminAccessFromRequest,
+  ADMIN_ACCESS_COOKIE,
+} = require("../services/admin-session.service");
+
 const requireAdmin = async (req, res, next) => {
-  const { authorization } = req.headers;
   try {
-    if (!authorization || !String(authorization).startsWith("Bearer ")) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-    }
-    const token = String(authorization).split(" ")[1];
+    const token = readAdminAccessFromRequest(req);
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -86,6 +85,12 @@ const requireAdmin = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, secret.token_secret);
+    if (decoded?.type && decoded.type !== "admin_access") {
+      return res.status(403).json({
+        success: false,
+        message: "Admin access required",
+      });
+    }
     if (!decoded?._id) {
       return res.status(401).json({
         success: false,
@@ -138,4 +143,5 @@ module.exports = {
   isAdmin,
   requireAdmin,
   ADMIN_ROLES,
+  ADMIN_ACCESS_COOKIE,
 };

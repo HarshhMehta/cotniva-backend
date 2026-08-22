@@ -29,7 +29,7 @@ router.post("/magic/promotions", magicGetPromotions);
 router.get("/magic/promotions", magicGetPromotions);
 router.post("/magic/apply-promotion", magicApplyPromotion);
 
-router.get("/orders", getOrders);
+router.get("/orders", requireAdmin, getOrders);
 router.get("/status-meta", getOrderStatusMeta);
 
 // Razorpay
@@ -49,7 +49,7 @@ router.patch("/update-notes/:id", requireAdmin, updateAdminNotes);
 router.post("/sync-razorpay-address/:id", requireAdmin, syncRazorpayAddress);
 router.post("/:id/resend-confirmed", requireAdmin, resendOrderConfirmed);
 
-// single order last
-router.get("/:id", getSingleOrder);
+// single order — admin only (customers use /api/user-order/:id)
+router.get("/:id", requireAdmin, getSingleOrder);
 
 module.exports = router;

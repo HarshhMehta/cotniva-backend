@@ -3,21 +3,73 @@ const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 dayjs.extend(utc);
 
+const normalizeCategories = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+};
+
+const parseNumberInput = (raw) => {
+  if (typeof raw === 'number') return raw;
+  const cleaned = String(raw ?? '')
+    .replace(/%/g, '')
+    .replace(/,/g, '')
+    .replace(/[^\d.-]/g, '')
+    .trim();
+  if (!cleaned) return NaN;
+  return Number(cleaned);
+};
+
+const buildCouponPayload = (body = {}) => {
+  const neverExpires = Boolean(body.neverExpires);
+  let endTime = null;
+  if (!neverExpires && body.endTime) {
+    const parsed = dayjs(body.endTime);
+    endTime = parsed.isValid() ? parsed.toDate() : null;
+  }
+
+  return {
+    title: body.title,
+    logo: body.logo || '',
+    couponCode: String(body.couponCode || '').trim().toUpperCase(),
+    discountPercentage: parseNumberInput(body.discountPercentage),
+    minimumAmount: parseNumberInput(body.minimumAmount) || 0,
+    neverExpires,
+    endTime,
+    productType: body.productType || 'all',
+    applicableCategories: normalizeCategories(body.applicableCategories),
+    status: body.status || 'active',
+  };
+};
+
 // addCoupon
-const addCoupon = async (req, res,next) => {
+const addCoupon = async (req, res, next) => {
   try {
-    const newCoupon = new Coupon(req.body);
-    if(!newCoupon.startTime){
-      newCoupon.startTime = new Date()
+    const payload = buildCouponPayload(req.body);
+    if (!payload.title || !payload.couponCode) {
+      return res.status(400).json({ message: 'Title and coupon code are required' });
+    }
+    if (!Number.isFinite(payload.discountPercentage) || payload.discountPercentage <= 0) {
+      return res.status(400).json({ message: 'Discount percentage must be greater than 0' });
+    }
+    if (!payload.neverExpires && !payload.endTime) {
+      return res.status(400).json({ message: 'End date is required unless Never Expire is selected' });
+    }
+
+    const newCoupon = new Coupon(payload);
+    if (!newCoupon.startTime) {
+      newCoupon.startTime = new Date();
     }
     await newCoupon.save();
-    res.send({ message: 'Coupon Added Successfully!' });
+    res.send({ message: 'Coupon Added Successfully!', data: newCoupon });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
+
 // addAllCoupon
-const addAllCoupon = async (req, res,next) => {
+const addAllCoupon = async (req, res, next) => {
   try {
     await Coupon.deleteMany();
     await Coupon.insertMany(req.body);
@@ -25,57 +77,76 @@ const addAllCoupon = async (req, res,next) => {
       message: 'Coupon Added successfully!',
     });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
+
 // getAllCoupons
-const getAllCoupons = async (req, res,next) => {
+const getAllCoupons = async (req, res, next) => {
   try {
-    const coupons = await Coupon.find({}).sort({ _id: -1 });
+    const coupons = await Coupon.find({})
+      .populate('applicableCategories', 'parent img status')
+      .sort({ _id: -1 });
     res.send(coupons);
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
+
 // getCouponById
-const getCouponById = async (req, res,next) => {
+const getCouponById = async (req, res, next) => {
   try {
-    const coupon = await Coupon.findById(req.params.id);
+    const coupon = await Coupon.findById(req.params.id).populate(
+      'applicableCategories',
+      'parent img status'
+    );
     res.send(coupon);
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
+
 // updateCoupon
-const updateCoupon = async (req, res,next) => {
+const updateCoupon = async (req, res, next) => {
   try {
     const coupon = await Coupon.findById(req.params.id);
-    if (coupon) {
-      coupon.title = req.body.title;
-      coupon.couponCode = req.body.couponCode;
-      coupon.endTime = dayjs().utc().format(req.body.endTime);
-      coupon.discountPercentage = req.body.discountPercentage;
-      coupon.minimumAmount = req.body.minimumAmount;
-      coupon.productType = req.body.productType;
-      coupon.logo = req.body.logo;
-      await coupon.save();
-      res.send({ message: 'Coupon Updated Successfully!' });
+    if (!coupon) {
+      return res.status(404).json({ message: 'Coupon not found' });
     }
+
+    const payload = buildCouponPayload(req.body);
+    if (!payload.neverExpires && !payload.endTime) {
+      return res.status(400).json({ message: 'End date is required unless Never Expire is selected' });
+    }
+
+    coupon.title = payload.title;
+    coupon.couponCode = payload.couponCode;
+    coupon.discountPercentage = payload.discountPercentage;
+    coupon.minimumAmount = payload.minimumAmount;
+    coupon.productType = payload.productType;
+    coupon.logo = payload.logo;
+    coupon.neverExpires = payload.neverExpires;
+    coupon.endTime = payload.endTime;
+    coupon.applicableCategories = payload.applicableCategories;
+    if (req.body.status) coupon.status = req.body.status;
+
+    await coupon.save();
+    res.send({ message: 'Coupon Updated Successfully!' });
   } catch (error) {
-    // console.log('coupon error',error)
-    next(error)
+    next(error);
   }
 };
+
 // deleteCoupon
-const deleteCoupon = async (req, res,next) => {
+const deleteCoupon = async (req, res, next) => {
   try {
     await Coupon.findByIdAndDelete(req.params.id);
     res.status(200).json({
-      success:true,
-      message:'Coupon delete successfully',
-    })
+      success: true,
+      message: 'Coupon delete successfully',
+    });
   } catch (error) {
-    next(error)
+    next(error);
   }
 };
 

@@ -16,14 +16,14 @@ exports.generateToken = (userInfo) => {
   return token;
 };
 
-// tokenForVerify
+/** Email verification JWT — never embed password hash */
 exports.tokenForVerify = (user) => {
   return jwt.sign(
     {
       _id: user._id,
       name: user.name,
       email: user.email,
-      password: user.password,
+      purpose: "email_verify",
     },
     secret.jwt_secret_for_verify,
     { expiresIn: "10m" }

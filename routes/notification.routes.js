@@ -7,14 +7,15 @@ const {
   reportPaymentFailed,
   createManualNotification,
 } = require("../controller/notification.controller");
+const { requireAdmin } = require("../config/auth");
 
 const router = express.Router();
 
-router.get("/", getNotifications);
-router.get("/unread-count", getUnreadCount);
-router.patch("/read-all", markAllAsRead);
-router.patch("/:id/read", markAsRead);
+router.get("/", requireAdmin, getNotifications);
+router.get("/unread-count", requireAdmin, getUnreadCount);
+router.patch("/read-all", requireAdmin, markAllAsRead);
+router.patch("/:id/read", requireAdmin, markAsRead);
 router.post("/payment-failed", reportPaymentFailed);
-router.post("/", createManualNotification);
+router.post("/", requireAdmin, createManualNotification);
 
 module.exports = router;
