@@ -10,7 +10,11 @@ const connectDB = require("./config/db");
 const { secret } = require("./config/secret");
 const PORT = secret.port || 7001;
 const morgan = require("morgan");
+const logger = require("./utils/logger");
 const globalErrorHandler = require("./middleware/global-error-handler");
+
+// cPanel Passenger: capture stdout-style logs into logs/app.log too
+logger.mirrorConsole();
 
 const userRoutes = require("./routes/user.routes");
 const authRoutes = require("./routes/auth.routes");
@@ -105,7 +109,8 @@ app.post("/deploy-hook", (req, res) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());
-app.use(morgan("dev"));
+// Request logs → console + logs/app.log (Passenger only captures stderr by default)
+app.use(morgan("dev", { stream: logger.stream }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/api/auth", authRoutes);
@@ -149,6 +154,7 @@ connectDB()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`server running on port ${PORT}`);
+      logger.info(`File logging active → ${logger.filePath}`);
       startHoldExpiryJob();
       // After Mongo is ready — restore Baileys session from DB (one environment only)
       if (isAutoStartEnabled()) {
