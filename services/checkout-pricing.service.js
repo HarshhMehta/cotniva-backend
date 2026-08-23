@@ -124,6 +124,18 @@ const resolveCouponDiscount = async ({
     throw pricingError("This coupon has expired", 400, "COUPON_EXPIRED");
   }
 
+  const maxUses = Number(coupon.maxUses);
+  if (Number.isFinite(maxUses) && maxUses > 0) {
+    const used = Math.max(0, Number(coupon.usedCount) || 0);
+    if (used >= maxUses) {
+      throw pricingError(
+        "This coupon has reached its maximum number of uses",
+        400,
+        "COUPON_MAX_USES"
+      );
+    }
+  }
+
   const minimumAmount = Math.max(0, Number(coupon.minimumAmount) || 0);
   if (minimumAmount > 0 && subTotalRupees + 1e-9 < minimumAmount) {
     throw pricingError(
@@ -133,24 +145,12 @@ const resolveCouponDiscount = async ({
     );
   }
 
-  const pct = Math.max(0, Math.min(100, Number(coupon.discountPercentage) || 0));
-  if (pct <= 0) {
-    return { discountRupees: 0, coupon };
-  }
+  const discountType =
+    String(coupon.discountType || "percentage").toLowerCase() === "fixed"
+      ? "fixed"
+      : "percentage";
 
   const eligible = getEligibleCartForCoupon(coupon, trustedCart);
-
-  // Match storefront: coupon % applies to list price × qty of eligible lines
-  const discountBase =
-    eligible.length > 0
-      ? eligible.reduce(
-          (sum, item) =>
-            sum +
-            Math.max(0, Number(item.price) || 0) *
-              (Number(item.orderQuantity) || 1),
-          0
-        )
-      : 0;
 
   if (eligible.length === 0) {
     throw pricingError(
@@ -160,8 +160,26 @@ const resolveCouponDiscount = async ({
     );
   }
 
-  let discountRupees = Number(((discountBase * pct) / 100).toFixed(2));
-  discountRupees = Math.max(0, Math.min(discountRupees, subTotalRupees));
+  // Match storefront: coupon applies to list price × qty of eligible lines
+  const discountBase = eligible.reduce(
+    (sum, item) =>
+      sum +
+      Math.max(0, Number(item.price) || 0) * (Number(item.orderQuantity) || 1),
+    0
+  );
+
+  let discountRupees = 0;
+  if (discountType === "fixed") {
+    const flat = Math.max(0, Number(coupon.discountAmount) || 0);
+    discountRupees = Number(Math.min(flat, discountBase, subTotalRupees).toFixed(2));
+  } else {
+    const pct = Math.max(0, Math.min(100, Number(coupon.discountPercentage) || 0));
+    if (pct <= 0) {
+      return { discountRupees: 0, coupon };
+    }
+    discountRupees = Number(((discountBase * pct) / 100).toFixed(2));
+    discountRupees = Math.max(0, Math.min(discountRupees, subTotalRupees));
+  }
 
   return { discountRupees, coupon };
 };
@@ -319,4 +337,14 @@ module.exports = {
   STORE_DEFAULTS,
   isStoreWideCoupon,
   getEligibleCartForCoupon,
+  resolveCouponDiscount,
+  recordCouponUse: async (couponCode) => {
+    const code = String(couponCode || "").trim();
+    if (!code) return;
+    const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await Coupon.updateOne(
+      { couponCode: new RegExp(`^${escaped}$`, "i") },
+      { $inc: { usedCount: 1 } }
+    );
+  },
 };

@@ -36,6 +36,7 @@ const {
   getStoreShippingSettings,
   resolveShippingCostRupees,
   toPaise,
+  recordCouponUse,
 } = require("../services/checkout-pricing.service");
 const { USER_POPULATE_SAFE } = require("../utils/sanitize-user");
 
@@ -721,6 +722,12 @@ const persistVerifiedOrder = async ({
       orderItems._id,
       razorpay_order_id
     );
+
+    if (orderData.couponCode) {
+      recordCouponUse(orderData.couponCode).catch((e) =>
+        console.log("coupon usedCount:", e.message)
+      );
+    }
 
     if (extraReserved) {
       await attachCommittedHold(razorpay_order_id, extraReserved, {

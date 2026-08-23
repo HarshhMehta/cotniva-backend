@@ -29,17 +29,41 @@ const buildCouponPayload = (body = {}) => {
     endTime = parsed.isValid() ? parsed.toDate() : null;
   }
 
+  const discountType =
+    String(body.discountType || "percentage").toLowerCase() === "fixed"
+      ? "fixed"
+      : "percentage";
+
+  const discountValue = parseNumberInput(
+    body.discountValue != null ? body.discountValue : body.discountPercentage
+  );
+
+  let maxUses = null;
+  if (body.maxUses !== undefined && body.maxUses !== null && body.maxUses !== "") {
+    const n = parseNumberInput(body.maxUses);
+    if (Number.isFinite(n) && n > 0) maxUses = Math.floor(n);
+  }
+
   return {
     title: body.title,
-    logo: body.logo || '',
-    couponCode: String(body.couponCode || '').trim().toUpperCase(),
-    discountPercentage: parseNumberInput(body.discountPercentage),
+    logo: body.logo || "",
+    couponCode: String(body.couponCode || "").trim().toUpperCase(),
+    discountType,
+    discountPercentage:
+      discountType === "percentage"
+        ? discountValue
+        : parseNumberInput(body.discountPercentage) || 0,
+    discountAmount:
+      discountType === "fixed"
+        ? discountValue
+        : parseNumberInput(body.discountAmount) || 0,
     minimumAmount: parseNumberInput(body.minimumAmount) || 0,
+    maxUses,
     neverExpires,
     endTime,
-    productType: body.productType || 'all',
+    productType: body.productType || "all",
     applicableCategories: normalizeCategories(body.applicableCategories),
-    status: body.status || 'active',
+    status: body.status || "active",
   };
 };
 
@@ -50,11 +74,15 @@ const addCoupon = async (req, res, next) => {
     if (!payload.title || !payload.couponCode) {
       return res.status(400).json({ message: 'Title and coupon code are required' });
     }
-    if (!Number.isFinite(payload.discountPercentage) || payload.discountPercentage <= 0) {
-      return res.status(400).json({ message: 'Discount percentage must be greater than 0' });
+    if (payload.discountType === "fixed") {
+      if (!Number.isFinite(payload.discountAmount) || payload.discountAmount <= 0) {
+        return res.status(400).json({ message: "Discount amount (₹) must be greater than 0" });
+      }
+    } else if (!Number.isFinite(payload.discountPercentage) || payload.discountPercentage <= 0) {
+      return res.status(400).json({ message: "Discount percentage must be greater than 0" });
     }
     if (!payload.neverExpires && !payload.endTime) {
-      return res.status(400).json({ message: 'End date is required unless Never Expire is selected' });
+      return res.status(400).json({ message: "End date is required unless Never Expire is selected" });
     }
 
     const newCoupon = new Coupon(payload);
@@ -118,11 +146,21 @@ const updateCoupon = async (req, res, next) => {
     if (!payload.neverExpires && !payload.endTime) {
       return res.status(400).json({ message: 'End date is required unless Never Expire is selected' });
     }
+    if (payload.discountType === "fixed") {
+      if (!Number.isFinite(payload.discountAmount) || payload.discountAmount <= 0) {
+        return res.status(400).json({ message: "Discount amount (₹) must be greater than 0" });
+      }
+    } else if (!Number.isFinite(payload.discountPercentage) || payload.discountPercentage <= 0) {
+      return res.status(400).json({ message: "Discount percentage must be greater than 0" });
+    }
 
     coupon.title = payload.title;
     coupon.couponCode = payload.couponCode;
+    coupon.discountType = payload.discountType;
     coupon.discountPercentage = payload.discountPercentage;
+    coupon.discountAmount = payload.discountAmount;
     coupon.minimumAmount = payload.minimumAmount;
+    coupon.maxUses = payload.maxUses;
     coupon.productType = payload.productType;
     coupon.logo = payload.logo;
     coupon.neverExpires = payload.neverExpires;

@@ -32,10 +32,38 @@ const couponSchema = new mongoose.Schema(
     discountPercentage: {
       type: Number,
       required: true,
+      default: 0,
+    },
+    /** percentage | fixed (₹ off) */
+    discountType: {
+      type: String,
+      enum: ["percentage", "fixed"],
+      default: "percentage",
+    },
+    /** Flat rupee discount when discountType is fixed */
+    discountAmount: {
+      type: Number,
+      required: false,
+      default: 0,
     },
     minimumAmount: {
       type: Number,
       required: true,
+    },
+    /**
+     * Max total redemptions across all customers.
+     * null / undefined / 0 = unlimited
+     */
+    maxUses: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+    /** How many times this coupon has been successfully applied on an order */
+    usedCount: {
+      type: Number,
+      required: false,
+      default: 0,
     },
     /**
      * Legacy field. New coupons use "all" when store-wide,
