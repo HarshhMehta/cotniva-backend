@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Product = require("../model/Products");
 const Coupon = require("../model/Coupon");
+const Order = require("../model/Order");
 
 const STORE_DEFAULTS = {
   deliveryCharge: 100,
@@ -85,6 +86,61 @@ const pricingError = (message, statusCode = 400, code = "PRICING_ERROR") => {
   return err;
 };
 
+const escapeRegex = (value) =>
+  String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Enforce per-customer redemption cap (logged-in user id or checkout email). */
+const assertCouponPerUserLimit = async ({
+  coupon,
+  couponCode,
+  userId,
+  email,
+}) => {
+  const limit = Number(coupon?.maxUsesPerUser);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+
+  const code = String(couponCode || coupon?.couponCode || "").trim();
+  if (!code) return;
+
+  const codeMatch = new RegExp(`^${escapeRegex(code)}$`, "i");
+  const baseQuery = {
+    paymentStatus: "paid",
+    couponCode: codeMatch,
+  };
+
+  let priorUses = 0;
+  const uid = String(userId || "").trim();
+  const mail = String(email || "").trim().toLowerCase();
+
+  if (uid && mongoose.Types.ObjectId.isValid(uid)) {
+    priorUses = await Order.countDocuments({
+      ...baseQuery,
+      user: uid,
+    });
+  } else if (mail) {
+    priorUses = await Order.countDocuments({
+      ...baseQuery,
+      email: mail,
+    });
+  } else {
+    throw pricingError(
+      "Sign in or enter your email to use this coupon",
+      400,
+      "COUPON_USER_REQUIRED"
+    );
+  }
+
+  if (priorUses >= limit) {
+    throw pricingError(
+      limit === 1
+        ? "You have already used this coupon on a previous order"
+        : `You can use this coupon at most ${limit} time(s)`,
+      400,
+      "COUPON_USER_LIMIT"
+    );
+  }
+};
+
 /**
  * Validate coupon from DB and compute rupee discount.
  * Never trusts client discount amounts.
@@ -93,6 +149,8 @@ const resolveCouponDiscount = async ({
   couponCode,
   trustedCart,
   subTotalRupees,
+  userId,
+  email,
 }) => {
   const code = String(couponCode || "")
     .trim()
@@ -135,6 +193,13 @@ const resolveCouponDiscount = async ({
       );
     }
   }
+
+  await assertCouponPerUserLimit({
+    coupon,
+    couponCode: code,
+    userId,
+    email,
+  });
 
   const minimumAmount = Math.max(0, Number(coupon.minimumAmount) || 0);
   if (minimumAmount > 0 && subTotalRupees + 1e-9 < minimumAmount) {
@@ -189,7 +254,12 @@ const resolveCouponDiscount = async ({
  * Client may supply: _id, orderQuantity, selectedSize, productUrl (display only).
  * Price / discount / title / images come from DB.
  */
-const buildTrustedCheckout = async ({ cart = [], couponCode } = {}) => {
+const buildTrustedCheckout = async ({
+  cart = [],
+  couponCode,
+  userId,
+  email,
+} = {}) => {
   if (!Array.isArray(cart) || cart.length === 0) {
     throw pricingError("Cart is required for Magic Checkout", 400, "EMPTY_CART");
   }
@@ -297,6 +367,8 @@ const buildTrustedCheckout = async ({ cart = [], couponCode } = {}) => {
     couponCode,
     trustedCart,
     subTotalRupees,
+    userId,
+    email,
   });
 
   const storeShip = await getStoreShippingSettings();

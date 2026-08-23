@@ -51,10 +51,19 @@ const couponSchema = new mongoose.Schema(
       required: true,
     },
     /**
-     * Max total redemptions across all customers.
+     * Max total redemptions across all customers (store-wide cap).
      * null / undefined / 0 = unlimited
      */
     maxUses: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+    /**
+     * Max times a single customer can use this code (by user id or checkout email).
+     * null / undefined / 0 = unlimited per customer
+     */
+    maxUsesPerUser: {
       type: Number,
       required: false,
       default: null,

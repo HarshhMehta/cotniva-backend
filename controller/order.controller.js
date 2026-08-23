@@ -69,6 +69,20 @@ const pick = (...vals) => {
   return "";
 };
 
+/** User id + email for per-customer coupon limits at checkout. */
+const checkoutUserContext = (body = {}) => {
+  const shipping = body.shipping && typeof body.shipping === "object" ? body.shipping : {};
+  const notes = body.notes && typeof body.notes === "object" ? body.notes : {};
+  const userId =
+    shipping.user ||
+    notes.userId ||
+    body.user ||
+    body.userId ||
+    null;
+  const email = shipping.email || body.email || notes.email || "";
+  return { userId, email };
+};
+
 const formatRazorpayAddress = (addr = {}) =>
   [addr.line1, addr.line2, addr.street, addr.address]
     .map((x) => (x == null ? "" : String(x).trim()))
@@ -216,6 +230,8 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
       couponCode,
     } = req.body || {};
 
+    const { userId, email } = checkoutUserContext(req.body);
+
     let priced;
     try {
       priced = await buildTrustedCheckout({
@@ -225,6 +241,8 @@ exports.createMagicCheckoutOrder = async (req, res, next) => {
           notes?.couponCode ||
           req.body?.coupon?.couponCode ||
           "",
+        userId,
+        email,
       });
     } catch (priceErr) {
       const status = priceErr.statusCode || 400;
@@ -536,6 +554,16 @@ const persistVerifiedOrder = async ({
         const rebuilt = await buildTrustedCheckout({
           cart: Array.isArray(orderPayload?.cart) ? orderPayload.cart : [],
           couponCode: orderPayload?.couponCode || "",
+          userId:
+            orderPayload?.user ||
+            orderPayload?.shipping?.user ||
+            draft.user ||
+            null,
+          email:
+            orderPayload?.email ||
+            orderPayload?.shipping?.email ||
+            draft.email ||
+            "",
         });
         trustedCart = rebuilt.trustedCart;
         draft.cart = rebuilt.trustedCart;

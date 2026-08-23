@@ -58,6 +58,8 @@ const orderSchema = new mongoose.Schema(
     subTotal: { type: Number, required: true },
     shippingCost: { type: Number, required: true },
     discount: { type: Number, required: true, default: 0 },
+    /** Coupon code applied on this order (for per-customer redemption limits) */
+    couponCode: { type: String, default: "", trim: true },
     totalAmount: { type: Number, required: true },
     shippingOption: { type: String, required: false },
     cardInfo: { type: Object, required: false },
@@ -116,6 +118,8 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ user: 1, couponCode: 1, paymentStatus: 1 });
+orderSchema.index({ email: 1, couponCode: 1, paymentStatus: 1 });
 orderSchema.index(
   { "paymentIntent.razorpay_payment_id": 1 },
   { unique: true, sparse: true }

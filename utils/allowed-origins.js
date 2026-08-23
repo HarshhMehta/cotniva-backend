@@ -27,9 +27,10 @@ function getStoreOrigins() {
     ),
     "https://cotniva.vercel.app",
     "https://cotniva.com",
+    "https://www.cotniva.com",
     "http://localhost:3000",
     "http://localhost:3001",
-    "http://127.0.0.1:3000",
+
   ];
 }
 
@@ -38,8 +39,8 @@ function getAdminOrigins() {
     ...expandEnvUrls(secret.admin_url, process.env.ADMIN_URL),
     "http://localhost:3001",
     "http://localhost:3002",
-    "http://127.0.0.1:3001",
     "https://cotniva-admin.vercel.app",
+    "https://cotnivastore.cotniva.com"
   ];
 }
 

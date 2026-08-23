@@ -44,6 +44,16 @@ const buildCouponPayload = (body = {}) => {
     if (Number.isFinite(n) && n > 0) maxUses = Math.floor(n);
   }
 
+  let maxUsesPerUser = null;
+  if (
+    body.maxUsesPerUser !== undefined &&
+    body.maxUsesPerUser !== null &&
+    body.maxUsesPerUser !== ""
+  ) {
+    const n = parseNumberInput(body.maxUsesPerUser);
+    if (Number.isFinite(n) && n > 0) maxUsesPerUser = Math.floor(n);
+  }
+
   return {
     title: body.title,
     logo: body.logo || "",
@@ -59,6 +69,7 @@ const buildCouponPayload = (body = {}) => {
         : parseNumberInput(body.discountAmount) || 0,
     minimumAmount: parseNumberInput(body.minimumAmount) || 0,
     maxUses,
+    maxUsesPerUser,
     neverExpires,
     endTime,
     productType: body.productType || "all",
@@ -161,6 +172,7 @@ const updateCoupon = async (req, res, next) => {
     coupon.discountAmount = payload.discountAmount;
     coupon.minimumAmount = payload.minimumAmount;
     coupon.maxUses = payload.maxUses;
+    coupon.maxUsesPerUser = payload.maxUsesPerUser;
     coupon.productType = payload.productType;
     coupon.logo = payload.logo;
     coupon.neverExpires = payload.neverExpires;
