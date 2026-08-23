@@ -12,16 +12,17 @@ const LISTING_FIELDS =
   "title discount price status tags imageURLs sellCount newArrival createdAt sizes sizeInventory quantity sizeGuide";
 
 function slugify(text = "") {
-  return String(text)
+  return String(text ?? "")
     .toLowerCase()
     .trim()
     .replace(/&/g, "and")
     .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
 
 async function ensureUniqueSlug(base, excludeId) {
-  let slug = base || "product";
+  let slug = slugify(base) || "product";
   let n = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -36,7 +37,7 @@ async function ensureUniqueSlug(base, excludeId) {
 
 // create product service
 exports.createProductService = async (data) => {
-  const baseSlug = data.slug || slugify(data.title);
+  const baseSlug = slugify(data.slug || data.title);
   data.slug = await ensureUniqueSlug(baseSlug);
   const sizes = Array.isArray(data.sizes) ? data.sizes : [];
   if (Array.isArray(data.sizeInventory)) {
@@ -180,25 +181,42 @@ exports.getProductService = async (idOrSlug) => {
   ];
 
   let product = null;
+  const raw = String(idOrSlug ?? "").trim();
+  const cleaned = slugify(raw);
   const isObjId =
-    mongoose.Types.ObjectId.isValid(idOrSlug) &&
-    String(new mongoose.Types.ObjectId(idOrSlug)) === String(idOrSlug);
+    mongoose.Types.ObjectId.isValid(raw) &&
+    String(new mongoose.Types.ObjectId(raw)) === String(raw);
 
   if (isObjId) {
-    product = await Product.findById(idOrSlug).populate(populateOpts);
+    product = await Product.findById(raw).populate(populateOpts);
   }
-  if (!product) {
-    product = await Product.findOne({ slug: idOrSlug }).populate(populateOpts);
+  if (!product && raw) {
+    product = await Product.findOne({ slug: raw }).populate(populateOpts);
   }
-  if (!product) {
+  if (!product && cleaned && cleaned !== raw) {
+    product = await Product.findOne({ slug: cleaned }).populate(populateOpts);
+  }
+  if (!product && raw) {
     product = await Product.findOne({
-      slug: new RegExp(`^${String(idOrSlug).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+      slug: new RegExp(
+        `^${raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "i"
+      ),
+    }).populate(populateOpts);
+  }
+  // Stored slugs may have trailing hyphens; match cleaned form + optional trailing "-"
+  if (!product && cleaned) {
+    product = await Product.findOne({
+      slug: new RegExp(
+        `^${cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-*$`,
+        "i"
+      ),
     }).populate(populateOpts);
   }
 
   // Match slugified title for older products without slug saved yet
-  if (!product) {
-    const titleGuess = String(idOrSlug).replace(/-/g, " ").trim();
+  if (!product && cleaned) {
+    const titleGuess = cleaned.replace(/-/g, " ").trim();
     product = await Product.findOne({
       title: new RegExp(
         `^${titleGuess.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
@@ -207,7 +225,7 @@ exports.getProductService = async (idOrSlug) => {
     }).populate(populateOpts);
   }
 
-  // Backfill slug for older products
+  // Backfill slug for older products (always normalized)
   if (product && !product.slug && product.title) {
     product.slug = await ensureUniqueSlug(slugify(product.title), product._id);
     await product.save();
@@ -236,7 +254,7 @@ exports.updateProductService = async (id, currProduct) => {
   const existing = await Product.findById(id).select("status").lean();
   if (!existing) return null;
 
-  const nextSlug = currProduct.slug || slugify(currProduct.title);
+  const nextSlug = slugify(currProduct.slug || currProduct.title);
   const $set = {
     title: currProduct.title,
     sku: currProduct.sku,
