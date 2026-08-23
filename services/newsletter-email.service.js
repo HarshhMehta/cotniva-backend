@@ -17,7 +17,7 @@ const esc = (value) =>
     .replace(/"/g, "&quot;");
 
 const storeUrl = () =>
-  String(secret.client_url || "https://cotniva.vercel.app").replace(/\/$/, "");
+  String(secret.client_url || "https://cotniva.com").replace(/\/$/, "");
 
 /** Plain text → safe HTML paragraphs */
 const contentToHtml = (content) => {

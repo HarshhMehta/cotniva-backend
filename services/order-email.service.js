@@ -212,7 +212,7 @@ const sendOrThrow = async (label, mail) => {
   return info;
 };
 
-const storeUrl = () => secret.client_url || "https://cotniva.vercel.app";
+const storeUrl = () => secret.client_url || "https://cotniva.com";
 const adminUrl = () => secret.admin_url || "";
 
 const sendOrderConfirmedEmails = async (order) => {

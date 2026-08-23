@@ -13,7 +13,7 @@ const WA_SEND_LOCK_MS = Math.max(
   Number(process.env.WHATSAPP_SEND_LOCK_MS) || 5 * 60 * 1000
 );
 
-const storeUrl = () => secret.client_url || "https://cotniva.vercel.app";
+const storeUrl = () => secret.client_url || "https://cotniva.com";
 
 const inr = (n) =>
   `₹${Number(n || 0).toLocaleString("en-IN", {
