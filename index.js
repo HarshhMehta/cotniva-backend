@@ -109,6 +109,19 @@ app.post("/deploy-hook", (req, res) => {
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(cookieParser());
+
+// cPanel/LiteSpeed may block PATCH — admin proxy sends POST + this header
+app.use((req, res, next) => {
+  const override = String(req.get("X-HTTP-Method-Override") || "").toUpperCase();
+  if (
+    req.method === "POST" &&
+    override &&
+    ["PATCH", "PUT", "DELETE"].includes(override)
+  ) {
+    req.method = override;
+  }
+  next();
+});
 // Request logs → console + logs/app.log (Passenger only captures stderr by default)
 app.use(morgan("dev", { stream: logger.stream }));
 app.use(express.static(path.join(__dirname, "public")));

@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const { bindPatchOrPost } = require('../utils/patch-or-post');
+const patchOrPost = bindPatchOrPost(router);
 const {
   addCoupon,
   addAllCoupon,
@@ -14,7 +16,7 @@ router.post('/add', requireAdmin, addCoupon);
 router.post('/all', requireAdmin, addAllCoupon);
 router.get('/', getAllCoupons);
 router.get('/:id', getCouponById);
-router.patch('/:id', requireAdmin, updateCoupon);
+patchOrPost('/:id', requireAdmin, updateCoupon);
 router.delete('/:id', requireAdmin, deleteCoupon);
 
 module.exports = router;

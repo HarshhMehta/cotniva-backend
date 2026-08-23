@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const { bindPatchOrPost } = require('../utils/patch-or-post');
+const patchOrPost = bindPatchOrPost(router);
 const productController = require('../controller/product.controller');
 const { requireAdmin } = require('../config/auth');
 
@@ -17,7 +19,7 @@ router.get('/popular/:type', productController.getPopularProductByType);
 router.get('/related-product/:id', productController.getRelatedProducts);
 router.get("/single-product/:id", productController.getSingleProduct);
 router.get("/stock-out", requireAdmin, productController.stockOutProducts);
-router.patch("/edit-product/:id", requireAdmin, productController.updateProduct);
+patchOrPost("/edit-product/:id", requireAdmin, productController.updateProduct);
 router.get('/:type', productController.getProductsByType);
 router.delete('/:id', requireAdmin, productController.deleteProduct);
 

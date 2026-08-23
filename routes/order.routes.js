@@ -21,6 +21,8 @@ const {
 const { requireAdmin } = require("../config/auth");
 
 const router = express.Router();
+const { bindPatchOrPost } = require("../utils/patch-or-post");
+const patchOrPost = bindPatchOrPost(router);
 
 // Magic Checkout callbacks — must be before /:id
 router.post("/magic/shipping-info", magicShippingInfo);
@@ -43,9 +45,9 @@ router.post("/create-payment-intent", paymentIntent);
 
 router.post("/saveOrder", addOrder);
 // Admin-only mutations (customer JWT → 403)
-router.patch("/update-status/:id", requireAdmin, updateOrderStatus);
+patchOrPost("/update-status/:id", requireAdmin, updateOrderStatus);
 router.post("/:id/emergency-cancel", requireAdmin, emergencyCancelOrder);
-router.patch("/update-notes/:id", requireAdmin, updateAdminNotes);
+patchOrPost("/update-notes/:id", requireAdmin, updateAdminNotes);
 router.post("/sync-razorpay-address/:id", requireAdmin, syncRazorpayAddress);
 router.post("/:id/resend-confirmed", requireAdmin, resendOrderConfirmed);
 

@@ -1,6 +1,8 @@
 const express = require("express");
 const multer = require("multer");
 const router = express.Router();
+const { bindPatchOrPost } = require("../utils/patch-or-post");
+const patchOrPost = bindPatchOrPost(router);
 const verifyToken = require("../middleware/verifyToken");
 const { requireAdmin } = require("../config/auth");
 const {
@@ -69,7 +71,7 @@ router.get("/product/:productId", getProductReviews);
 router.get("/admin/stats", requireAdmin, adminReviewStats);
 router.get("/admin/list", requireAdmin, adminListReviews);
 router.get("/admin/:id", requireAdmin, adminGetReview);
-router.patch("/admin/:id/status", requireAdmin, adminUpdateStatus);
+patchOrPost("/admin/:id/status", requireAdmin, adminUpdateStatus);
 router.delete("/admin/:id", requireAdmin, adminDeleteReview);
 router.delete("/delete/:id", requireAdmin, deleteReviews);
 
